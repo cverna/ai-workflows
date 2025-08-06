@@ -36,19 +36,37 @@ def get_jira_details(
     issue_key: Annotated[str, Field(description="Jira issue key (e.g. RHEL-12345)")],
 ) -> dict[str, Any] | str:
     """
-    Gets details about the specified Jira issue, including all comments.
-    Returns a dictionary with issue details and comments or an error message on failure.
+    Gets details about the specified Jira issue, including all comments and remote links.
+    Returns a dictionary with issue details, comments, and remote links or an error message on failure.
     """
     try:
+        # Get issue details with comments
         response = requests.get(
             urljoin(os.getenv("JIRA_URL"), f"rest/api/2/issue/{issue_key}"),
             params={"expand": "comments"},
-            headers=_get_jira_headers(os.getenv("JIRA_TOKEN")),
+            headers=_get_jira_headers(os.getenv("rm")),
         )
         response.raise_for_status()
+        issue_data = response.json()
+        
+        # Get remote links
+        try:
+            remote_response = requests.get(
+                urljoin(os.getenv("JIRA_URL"), f"rest/api/2/issue/{issue_key}/remotelink"),
+                headers=_get_jira_headers(os.getenv("rm")),
+            )
+            remote_response.raise_for_status()
+            remote_links = remote_response.json()
+            
+            # Add remote links to the issue data
+            issue_data["remote_links"] = remote_links
+        except requests.RequestException as e:
+            # If remote links fail, continue without them
+            issue_data["remote_links"] = []
+            
     except requests.RequestException as e:
         return f"Failed to get details about the specified issue: {e}"
-    return response.json()
+    return issue_data
 
 
 def set_jira_fields(

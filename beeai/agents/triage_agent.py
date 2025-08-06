@@ -102,6 +102,7 @@ class TriageMultiAgentWorkflow:
             1. Open the Jira issue and thoroughly analyze it:
                * Extract key details from the title, description, fields, and comments
                * **CRITICAL: Check the "Issue Links" section for any GitHub commits, pull requests, or upstream references**
+               * **CRITICAL: Check the "remote_links" field for external links to GitHub PRs, issues, or other upstream references**
                * Pay special attention to comments as they often contain crucial information such as:
                  - Additional context about the problem
                  - Links to upstream fixes or patches
@@ -109,7 +110,7 @@ class TriageMultiAgentWorkflow:
                * Look for keywords indicating the root cause of the problem
                * Identify specific error messages, log snippets, or CVE identifiers
                * Note any functions, files, or methods mentioned
-               * **Pay special attention to any direct links to fixes provided in the issue, especially in Issue Links**
+               * **Pay special attention to any direct links to fixes provided in the issue, especially in Issue Links and Remote Links**
 
             2. Identify the package name that must be updated:
                * Determine the name of the package from the issue details (usually component name)
@@ -125,7 +126,7 @@ class TriageMultiAgentWorkflow:
             Return your analysis in JSON format with these exact fields:
             - package_name: The exact package name identified
             - target_branch: The target branch from fixVersion mapping
-            - direct_links: Array of any direct links to fixes found in the issue (including GitHub commits, pull requests, or upstream references from Issue Links)
+            - direct_links: Array of any direct links to fixes found in the issue (including GitHub commits, pull requests, or upstream references from Issue Links and Remote Links)
             - keywords: Array of keywords indicating the root cause
             - root_cause: Detailed description of the root cause
 
