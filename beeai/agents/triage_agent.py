@@ -84,7 +84,7 @@ class TriageMultiAgentWorkflow:
 
     def _setup_agents(self, mcp_tools_list=None) -> None:
         """Setup specialized agents for different aspects of triage"""
-        
+
         # Prepare tools for JiraAnalyzer (include MCP tools if provided)
         jira_analyzer_tools = [ThinkTool()]
         if mcp_tools_list:
@@ -101,6 +101,7 @@ class TriageMultiAgentWorkflow:
             **Analysis Steps:**
             1. Open the Jira issue and thoroughly analyze it:
                * Extract key details from the title, description, fields, and comments
+               * **CRITICAL: Check the "Issue Links" section for any GitHub commits, pull requests, or upstream references**
                * Pay special attention to comments as they often contain crucial information such as:
                  - Additional context about the problem
                  - Links to upstream fixes or patches
@@ -108,7 +109,7 @@ class TriageMultiAgentWorkflow:
                * Look for keywords indicating the root cause of the problem
                * Identify specific error messages, log snippets, or CVE identifiers
                * Note any functions, files, or methods mentioned
-               * Pay attention to any direct links to fixes provided in the issue
+               * **Pay special attention to any direct links to fixes provided in the issue, especially in Issue Links**
 
             2. Identify the package name that must be updated:
                * Determine the name of the package from the issue details (usually component name)
@@ -124,7 +125,7 @@ class TriageMultiAgentWorkflow:
             Return your analysis in JSON format with these exact fields:
             - package_name: The exact package name identified
             - target_branch: The target branch from fixVersion mapping
-            - direct_links: Array of any direct links to fixes found in the issue
+            - direct_links: Array of any direct links to fixes found in the issue (including GitHub commits, pull requests, or upstream references from Issue Links)
             - keywords: Array of keywords indicating the root cause
             - root_cause: Detailed description of the root cause
 
@@ -182,6 +183,7 @@ class TriageMultiAgentWorkflow:
             1. **Deep Analysis of the Issue:**
                * Use the details extracted from the JiraAnalyzer's analysis
                * Focus on keywords and root cause identification
+               * **CRITICAL: If the JiraAnalyzer found direct_links, prioritize those as your primary leads**
                * If the Jira issue already provides a direct link to the fix, use that as your primary lead
                  (e.g. in the commit hash field or comment)
 
