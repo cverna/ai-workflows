@@ -44,26 +44,28 @@ def get_jira_details(
         response = requests.get(
             urljoin(os.getenv("JIRA_URL"), f"rest/api/2/issue/{issue_key}"),
             params={"expand": "comments"},
-            headers=_get_jira_headers(os.getenv("rm")),
+            headers=_get_jira_headers(os.getenv("JIRA_API_TOKEN")),
         )
         response.raise_for_status()
         issue_data = response.json()
-        
+
         # Get remote links
         try:
             remote_response = requests.get(
-                urljoin(os.getenv("JIRA_URL"), f"rest/api/2/issue/{issue_key}/remotelink"),
-                headers=_get_jira_headers(os.getenv("rm")),
+                urljoin(
+                    os.getenv("JIRA_URL"), f"rest/api/2/issue/{issue_key}/remotelink"
+                ),
+                headers=_get_jira_headers(os.getenv("JIRA_API_TOKEN")),
             )
             remote_response.raise_for_status()
             remote_links = remote_response.json()
-            
+
             # Add remote links to the issue data
             issue_data["remote_links"] = remote_links
         except requests.RequestException as e:
             # If remote links fail, continue without them
             issue_data["remote_links"] = []
-            
+
     except requests.RequestException as e:
         return f"Failed to get details about the specified issue: {e}"
     return issue_data
