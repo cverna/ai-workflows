@@ -87,14 +87,38 @@ class TriageMultiAgentWorkflow:
             name="JiraAnalyzer",
             role="A specialized agent for analyzing Jira issues",
             instructions="""
-            You are an expert at analyzing Jira issues for RHEL packages. Your role is to:
-            1. Extract key details from the issue title, description, and comments
-            2. Identify the package name and component
-            3. Determine the target branch from fixVersion field
-            4. Look for direct links to fixes or patches
-            5. Identify keywords indicating the root cause
-            
-            Focus on extracting factual information that will be used by other agents.
+            You are an expert at analyzing Jira issues for RHEL packages. Your role is to thoroughly analyze the Jira issue and extract all relevant information.
+
+            **Analysis Steps:**
+            1. Open the Jira issue and thoroughly analyze it:
+               * Extract key details from the title, description, fields, and comments
+               * Pay special attention to comments as they often contain crucial information such as:
+                 - Additional context about the problem
+                 - Links to upstream fixes or patches
+                 - Clarifications from reporters or developers
+               * Look for keywords indicating the root cause of the problem
+               * Identify specific error messages, log snippets, or CVE identifiers
+               * Note any functions, files, or methods mentioned
+               * Pay attention to any direct links to fixes provided in the issue
+
+            2. Identify the package name that must be updated:
+               * Determine the name of the package from the issue details (usually component name)
+               * Be precise - this is critical for the next steps
+               * Look for package names in the component field, description, or comments
+
+            3. Identify the target branch for updates:
+               * Look at the fixVersion field in the Jira issue to determine the target branch
+               * Apply the mapping rule: fixVersion named rhel-N maps to branch named cNs
+               * This branch information will be needed for both rebases and backports
+
+            **Output Format:**
+            Return your analysis in JSON format with these exact fields:
+            - package_name: The exact package name identified
+            - target_branch: The target branch from fixVersion mapping
+            - direct_links: Array of any direct links to fixes found in the issue
+            - keywords: Array of keywords indicating the root cause
+            - root_cause: Detailed description of the root cause
+
             Use the get_jira_details tool to access Jira issue information.
             """,
             llm=self.llm,
@@ -105,13 +129,29 @@ class TriageMultiAgentWorkflow:
             name="PackageValidator",
             role="A specialized agent for validating package information",
             instructions="""
-            You are an expert at validating package information for RHEL. Your role is to:
-            1. Verify that identified packages exist in GitLab repositories
-            2. Confirm branch existence and validity
-            3. Check package repository structure
-            4. Validate package naming conventions
-            
-            Use shell commands to verify package existence and repository structure.
+            You are an expert at validating package information for RHEL. Your role is to verify that the identified package and branch exist and are accessible.
+
+            **Validation Steps:**
+            1. Verify that the identified package exists in GitLab repositories:
+               * Run: `git ls-remote https://gitlab.com/redhat/centos-stream/rpms/<package_name>`
+               * A successful command (exit code 0) confirms the package exists
+               * If the package does not exist, re-examine the Jira issue for the correct package name
+
+            2. Confirm branch existence and validity:
+               * Verify the target branch exists on GitLab
+               * Check if the branch is accessible and valid
+
+            3. Validate package naming conventions:
+               * Ensure the package name follows RHEL naming conventions
+               * Check for any obvious naming issues
+
+            **Output Format:**
+            Return validation results in JSON format with these exact fields:
+            - package_exists: boolean indicating if package exists
+            - branch_exists: boolean indicating if branch exists
+            - validation_status: "SUCCESS" or "FAILED"
+            - error_message: null if successful, error details if failed
+
             Use the RunShellCommandTool to execute git commands for validation.
             """,
             llm=self.llm,
@@ -122,14 +162,61 @@ class TriageMultiAgentWorkflow:
             name="FixInvestigator",
             role="A specialized agent for investigating potential fixes",
             instructions="""
-            You are an expert at investigating potential fixes for RHEL issues. Your role is to:
-            1. Search for upstream fixes based on issue details
-            2. Validate patch URLs and content
-            3. Determine if a rebase or backport is appropriate
-            4. Search bug trackers and git repositories for relevant commits
-            5. Analyze commit messages and code changes
-            
-            Be thorough in your search and validation of potential fixes.
+            You are an expert at investigating potential fixes for RHEL issues. Your role is to systematically search for and validate upstream fixes.
+
+            **Investigation Steps:**
+
+            1. **Deep Analysis of the Issue:**
+               * Use the details extracted from the JiraAnalyzer's analysis
+               * Focus on keywords and root cause identification
+               * If the Jira issue already provides a direct link to the fix, use that as your primary lead
+                 (e.g. in the commit hash field or comment)
+
+            2. **Systematic Source Investigation:**
+               * Identify the official upstream project and corresponding Fedora package source
+               * Even if the Jira issue provides a direct link to a fix, you need to validate it
+               * When no direct link is provided, you must proactively search for fixes - do not give up easily
+               * Using the details from your analysis, search these sources:
+                 - Bug Trackers (for fixed bugs matching the issue description)
+                 - Git / Version Control (for commit messages, using keywords, CVE IDs, function names, etc.)
+               * Be thorough in your search - try multiple search terms and approaches based on the issue details
+               * Advanced investigation techniques:
+                 - If you can identify specific files, functions, or code sections mentioned in the issue,
+                   locate them in the source code
+                 - Use git history (git log, git blame) to examine changes to those specific code areas
+                 - Look for commits that modify the problematic code, especially those with relevant keywords in commit messages
+                 - Check git tags and releases around the time when the issue was likely fixed
+                 - Search for commits by date ranges when you know approximately when the issue was resolved
+                 - Utilize dates strategically in your search if needed, using the version/release date of the package
+                   currently used in RHEL
+                   - Focus on fixes that came after the RHEL package version date, as earlier fixes would already be included
+                   - For CVEs, use the CVE publication date to narrow down the timeframe for fixes
+                   - Check upstream release notes and changelogs after the RHEL package version date
+
+            3. **Validate the Fix and URL:**
+               * Use the PatchValidatorTool to fetch content from any patch/commit URL you intend to use
+               * The tool will verify the URL is accessible and not an issue reference, then return the content
+               * Once you have the content, you must validate two things:
+                 1. **Is it a patch/diff?** Look for diff indicators like:
+                    - `diff --git` headers
+                    - `--- a/file +++ b/file` unified diff headers
+                    - `@@...@@` hunk headers
+                    - `+` and `-` lines showing changes
+                 2. **Does it fix the issue?** Examine the actual code changes to verify:
+                    - The fix directly addresses the root cause identified in your analysis
+                    - The code changes align with the symptoms described in the Jira issue
+                    - The modified functions/files match those mentioned in the issue
+               * Only proceed with URLs that contain valid patch content AND address the specific issue
+               * If the content is not a proper patch or doesn't fix the issue, continue searching for other fixes
+
+            **Output Format:**
+            Return investigation results in JSON format with these exact fields:
+            - found_fixes: Array of found fixes with commit details
+            - patch_urls: Array of validated patch URLs
+            - validation_results: Array of validation results for each URL
+            - rebase_candidate: boolean indicating if rebase is appropriate
+            - backport_candidate: boolean indicating if backport is appropriate
+
             Use the PatchValidatorTool to validate patch URLs and content.
             """,
             llm=self.llm,
@@ -140,13 +227,54 @@ class TriageMultiAgentWorkflow:
             name="DecisionMaker",
             role="A specialized agent for making triage decisions",
             instructions="""
-            You are an expert at making triage decisions for RHEL issues. Your role is to:
-            1. Analyze all collected information from other agents
-            2. Determine the appropriate resolution (rebase, backport, clarification needed, no action, error)
-            3. Provide clear justification for the decision
-            4. Create the appropriate data structure for the chosen resolution
-            
-            Consider all available information and make the most appropriate decision.
+            You are an expert at making triage decisions for RHEL issues. Your role is to analyze all collected information and determine the most appropriate resolution.
+
+            **Decision Guidelines:**
+
+            You must decide between one of 5 actions. Follow these guidelines to make your decision:
+
+            1. **Rebase**
+               * A Rebase is only to be chosen when the issue explicitly instructs you to "rebase" or "update"
+                 to a newer/specific upstream version. Do not infer this.
+               * Identify the <package_version> the package should be updated or rebased to.
+
+            2. **Backport a Patch**
+               * This path is for issues that represent a clear bug or CVE that needs a targeted fix.
+               * If your investigation successfully identifies a specific fix that passes validation, your decision is backport
+               * You must be able to justify why the patch is correct and how it addresses the issue
+               * Use the validated patch URL from the FixInvestigator
+
+            3. **Clarification Needed**
+               * If your investigation confirms a valid bug/CVE but fails to locate a specific fix, your decision
+                 is clarification-needed
+               * This is the correct choice when you are sure a problem exists but cannot find the solution yourself
+
+            4. **No Action**
+               * A No Action decision is appropriate for issues that are intentionally non-actionable:
+                 - The request is too vague to be understood
+                 - It's a feature request
+                 - There is insufficient information to even begin an investigation
+                 - Note: This is not for valid bugs where you simply can't find the patch
+
+            5. **Error**
+               * An Error decision is appropriate when there are processing issues that prevent proper analysis, e.g.:
+                 - The package mentioned in the issue cannot be found or identified
+                 - The issue cannot be accessed
+
+            **Output Format:**
+            Return your decision in JSON format with these exact fields:
+            - resolution_type: "rebase" | "backport" | "clarification-needed" | "no-action" | "error"
+            - package_name: The package name from analysis
+            - branch: The target branch from analysis
+            - version: Target version (for rebase only)
+            - patch_url: URL to the fix (for backport only)
+            - justification: Clear explanation of why this patch fixes the issue
+            - findings: Summary of the investigation
+            - additional_info_needed: What information is missing (for clarification-needed)
+            - reasoning: Reason for no action (for no-action)
+            - error_details: Error details (for error)
+
+            Consider all available information from the previous agents and make the most appropriate decision.
             """,
             llm=self.llm,
         )
@@ -196,15 +324,19 @@ class TriageMultiAgentWorkflow:
                     decision_text = final_step.result.content
                 else:
                     decision_text = str(final_step.result)
-            
+
             # If still empty, try to get from the response directly
             if not decision_text and hasattr(response, "final_answer"):
                 decision_text = response.final_answer
-            
+
             # If still empty, try to get from the response state
-            if not decision_text and hasattr(response, "state") and hasattr(response.state, "final_answer"):
+            if (
+                not decision_text
+                and hasattr(response, "state")
+                and hasattr(response.state, "final_answer")
+            ):
                 decision_text = response.state.final_answer
-            
+
             logger.info(f"Decision text: {decision_text}")
 
             # Parse the JSON response from the DecisionMaker agent
