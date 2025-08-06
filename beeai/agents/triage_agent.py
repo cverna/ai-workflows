@@ -95,6 +95,7 @@ class TriageMultiAgentWorkflow:
             5. Identify keywords indicating the root cause
             
             Focus on extracting factual information that will be used by other agents.
+            Use the get_jira_details tool to access Jira issue information.
             """,
             llm=self.llm,
         )
@@ -111,6 +112,7 @@ class TriageMultiAgentWorkflow:
             4. Validate package naming conventions
             
             Use shell commands to verify package existence and repository structure.
+            Use the RunShellCommandTool to execute git commands for validation.
             """,
             llm=self.llm,
         )
@@ -128,6 +130,7 @@ class TriageMultiAgentWorkflow:
             5. Analyze commit messages and code changes
             
             Be thorough in your search and validation of potential fixes.
+            Use the PatchValidatorTool to validate patch URLs and content.
             """,
             llm=self.llm,
         )
@@ -172,85 +175,83 @@ class TriageMultiAgentWorkflow:
             ),
         ]
 
-        # Run the workflow with MCP tools
-        async with mcp_tools(
-            os.getenv("MCP_GATEWAY_URL"), 
-            filter=lambda t: t == "get_jira_details"
-        ) as gateway_tools:
-            # Add MCP tools to the workflow
-            # Note: In a real implementation, you'd need to integrate MCP tools with the workflow
-            # For now, we'll run the workflow and handle MCP tools separately
-            
-            response = await self.workflow.run(inputs)
-        
+        # Run the workflow
+        response = await self.workflow.run(inputs)
+
         logger.info(f"Workflow response: {response}")
-        
+
         # Extract the final decision from the last agent (DecisionMaker)
-        if response and hasattr(response, 'steps') and response.steps:
+        if response and hasattr(response, "steps") and response.steps:
             final_step = response.steps[-1]
             logger.info(f"Final step result: {final_step}")
-            
+
             # Try to extract the decision from the final agent's response
             decision_text = ""
-            if hasattr(final_step, 'result') and final_step.result:
-                if hasattr(final_step.result, 'text'):
+            if hasattr(final_step, "final_answer"):
+                decision_text = final_step.final_answer
+            elif hasattr(final_step, "result") and final_step.result:
+                if hasattr(final_step.result, "text"):
                     decision_text = final_step.result.text
-                elif hasattr(final_step.result, 'content'):
+                elif hasattr(final_step.result, "content"):
                     decision_text = final_step.result.content
                 else:
                     decision_text = str(final_step.result)
-            
+
             logger.info(f"Decision text: {decision_text}")
-            
+
             # Parse the JSON response from the DecisionMaker agent
             try:
                 import json
                 import re
-                
+
                 # Try to extract JSON from the response
-                json_match = re.search(r'\{.*\}', decision_text, re.DOTALL)
+                json_match = re.search(r"\{.*\}", decision_text, re.DOTALL)
                 if json_match:
                     decision_data = json.loads(json_match.group())
                     logger.info(f"Parsed decision data: {decision_data}")
-                    
+
                     # Create the appropriate result based on resolution type
-                    resolution_type = decision_data.get('resolution_type', 'error').lower()
-                    
-                    if resolution_type == 'backport':
+                    resolution_type = decision_data.get(
+                        "resolution_type", "error"
+                    ).lower()
+
+                    if resolution_type == "backport":
                         result = TriageResult(
                             resolution=Resolution.BACKPORT,
                             data=BackportData(
-                                package=decision_data.get('package_name', ''),
-                                branch=decision_data.get('branch', ''),
-                                patch_url=decision_data.get('patch_url', ''),
-                                justification=decision_data.get('justification', ''),
+                                package=decision_data.get("package_name", ""),
+                                branch=decision_data.get("branch", ""),
+                                patch_url=decision_data.get("patch_url", ""),
+                                justification=decision_data.get("justification", ""),
                                 jira_issue=jira_issue,
                             ),
                         )
-                    elif resolution_type == 'rebase':
+                    elif resolution_type == "rebase":
                         result = TriageResult(
                             resolution=Resolution.REBASE,
                             data=RebaseData(
-                                package=decision_data.get('package_name', ''),
-                                version=decision_data.get('version', ''),
-                                branch=decision_data.get('branch', ''),
+                                package=decision_data.get("package_name", ""),
+                                version=decision_data.get("version", ""),
+                                branch=decision_data.get("branch", ""),
                                 jira_issue=jira_issue,
                             ),
                         )
-                    elif resolution_type == 'clarification-needed':
+                    elif resolution_type == "clarification-needed":
                         result = TriageResult(
                             resolution=Resolution.CLARIFICATION_NEEDED,
                             data=ClarificationNeededData(
-                                findings=decision_data.get('findings', ''),
-                                additional_info_needed=decision_data.get('additional_info_needed', ''),
+                                findings=decision_data.get("findings", ""),
+                                additional_info_needed=decision_data.get(
+                                    "additional_info_needed", ""
+                                ),
                                 jira_issue=jira_issue,
                             ),
                         )
-                    elif resolution_type == 'no-action':
+                    elif resolution_type == "no-action":
                         result = TriageResult(
                             resolution=Resolution.NO_ACTION,
                             data=NoActionData(
-                                reasoning=decision_data.get('reasoning', ''),
+                                reasoning=decision_data.get("reasoning", ""),
                                 jira_issue=jira_issue,
                             ),
                         )
@@ -258,7 +259,9 @@ class TriageMultiAgentWorkflow:
                         result = TriageResult(
                             resolution=Resolution.ERROR,
                             data=ErrorData(
-                                details=decision_data.get('error_details', 'Unknown error'),
+                                details=decision_data.get(
+                                    "error_details", "Unknown error"
+                                ),
                                 jira_issue=jira_issue,
                             ),
                         )
@@ -272,7 +275,7 @@ class TriageMultiAgentWorkflow:
                             jira_issue=jira_issue,
                         ),
                     )
-                    
+
             except Exception as e:
                 logger.error(f"Error parsing decision: {e}")
                 result = TriageResult(
@@ -297,7 +300,7 @@ class TriageMultiAgentWorkflow:
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    
+
     # Setup observability
     setup_observability(os.getenv("COLLECTOR_ENDPOINT"))
 
