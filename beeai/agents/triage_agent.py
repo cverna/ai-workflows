@@ -201,6 +201,10 @@ class TriageMultiAgentWorkflow:
             if not decision_text and hasattr(response, "final_answer"):
                 decision_text = response.final_answer
             
+            # If still empty, try to get from the response state
+            if not decision_text and hasattr(response, "state") and hasattr(response.state, "final_answer"):
+                decision_text = response.state.final_answer
+            
             logger.info(f"Decision text: {decision_text}")
 
             # Parse the JSON response from the DecisionMaker agent
