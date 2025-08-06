@@ -119,7 +119,7 @@ class TriageMultiAgentWorkflow:
             - keywords: Array of keywords indicating the root cause
             - root_cause: Detailed description of the root cause
 
-            Use the get_jira_details tool to access Jira issue information.
+            IMPORTANT: You MUST use the get_jira_details tool to access the actual Jira issue data. Do not make assumptions based on the issue number alone.
             """,
             llm=self.llm,
         )
@@ -153,6 +153,8 @@ class TriageMultiAgentWorkflow:
             - error_message: null if successful, error details if failed
 
             Use the RunShellCommandTool to execute git commands for validation.
+            
+            IMPORTANT: Base your validation on the actual package name and branch identified by the JiraAnalyzer agent.
             """,
             llm=self.llm,
         )
@@ -218,6 +220,8 @@ class TriageMultiAgentWorkflow:
             - backport_candidate: boolean indicating if backport is appropriate
 
             Use the PatchValidatorTool to validate patch URLs and content.
+            
+            IMPORTANT: Base your investigation on the actual package name, branch, and issue details identified by the JiraAnalyzer agent.
             """,
             llm=self.llm,
         )
@@ -275,6 +279,8 @@ class TriageMultiAgentWorkflow:
             - error_details: Error details (for error)
 
             Consider all available information from the previous agents and make the most appropriate decision.
+            
+            IMPORTANT: Base your decision on the actual package name, branch, and investigation results from the previous agents.
             """,
             llm=self.llm,
         )
@@ -303,27 +309,8 @@ class TriageMultiAgentWorkflow:
             ),
         ]
 
-        # Run the workflow with MCP tools
-        async with mcp_tools(
-            os.getenv("MCP_GATEWAY_URL"), filter=lambda t: t == "get_jira_details"
-        ) as gateway_tools:
-            # Add MCP tools to the workflow agents
-            for agent_name in ["JiraAnalyzer", "PackageValidator", "FixInvestigator", "DecisionMaker"]:
-                if agent_name in self.workflow.agents:
-                    agent = self.workflow.agents[agent_name]
-                    # Extend the agent's tools with MCP tools
-                    original_tools = agent._tools.copy() if hasattr(agent, '_tools') else []
-                    agent._tools = original_tools + gateway_tools
-
-            # Run the workflow
-            response = await self.workflow.run(inputs)
-
-            # Restore original tools
-            for agent_name in ["JiraAnalyzer", "PackageValidator", "FixInvestigator", "DecisionMaker"]:
-                if agent_name in self.workflow.agents:
-                    agent = self.workflow.agents[agent_name]
-                    if hasattr(agent, '_tools'):
-                        agent._tools = original_tools
+        # Run the workflow
+        response = await self.workflow.run(inputs)
 
         logger.info(f"Workflow response: {response}")
 
