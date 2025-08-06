@@ -122,6 +122,7 @@ class TriageMultiAgentWorkflow:
             IMPORTANT: You MUST use the get_jira_details tool to access the actual Jira issue data. Do not make assumptions based on the issue number alone.
             """,
             llm=self.llm,
+            tools=[ThinkTool()],  # Will be extended with MCP tools during execution
         )
 
         # Package Validator Agent
@@ -157,6 +158,7 @@ class TriageMultiAgentWorkflow:
             IMPORTANT: Base your validation on the actual package name and branch identified by the JiraAnalyzer agent.
             """,
             llm=self.llm,
+            tools=[ThinkTool(), RunShellCommandTool()],
         )
 
         # Fix Investigator Agent
@@ -224,6 +226,7 @@ class TriageMultiAgentWorkflow:
             IMPORTANT: Base your investigation on the actual package name, branch, and issue details identified by the JiraAnalyzer agent.
             """,
             llm=self.llm,
+            tools=[ThinkTool(), PatchValidatorTool()],
         )
 
         # Decision Maker Agent
@@ -283,6 +286,7 @@ class TriageMultiAgentWorkflow:
             IMPORTANT: Base your decision on the actual package name, branch, and investigation results from the previous agents.
             """,
             llm=self.llm,
+            tools=[ThinkTool()],
         )
 
     async def run(self, jira_issue: str) -> TriageResult:
@@ -309,8 +313,22 @@ class TriageMultiAgentWorkflow:
             ),
         ]
 
-        # Run the workflow
-        response = await self.workflow.run(inputs)
+        # Run the workflow with MCP tools
+        async with mcp_tools(
+            os.getenv("MCP_GATEWAY_URL"), filter=lambda t: t == "get_jira_details"
+        ) as gateway_tools:
+            # Add MCP tools to the JiraAnalyzer agent
+            jira_analyzer = self.workflow.get_agent("JiraAnalyzer")
+            if jira_analyzer:
+                original_tools = jira_analyzer._tools.copy() if hasattr(jira_analyzer, '_tools') else []
+                jira_analyzer._tools = original_tools + gateway_tools
+
+            # Run the workflow
+            response = await self.workflow.run(inputs)
+
+            # Restore original tools
+            if jira_analyzer:
+                jira_analyzer._tools = original_tools
 
         logger.info(f"Workflow response: {response}")
 
