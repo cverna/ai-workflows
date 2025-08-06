@@ -196,7 +196,7 @@ class TriageMultiAgentWorkflow:
                     decision_text = final_step.result.content
                 else:
                     decision_text = str(final_step.result)
-
+            
             logger.info(f"Decision text: {decision_text}")
 
             # Parse the JSON response from the DecisionMaker agent
