@@ -317,13 +317,21 @@ class TriageMultiAgentWorkflow:
         async with mcp_tools(
             os.getenv("MCP_GATEWAY_URL"), filter=lambda t: t == "get_jira_details"
         ) as gateway_tools:
+            logger.info(f"Retrieved {len(gateway_tools)} MCP tools: {[t.name for t in gateway_tools]}")
+            
             # Add MCP tools to the JiraAnalyzer agent
             jira_analyzer = self.workflow.get_agent("JiraAnalyzer")
             if jira_analyzer:
-                original_tools = jira_analyzer._tools.copy() if hasattr(jira_analyzer, '_tools') else []
+                original_tools = (
+                    jira_analyzer._tools.copy()
+                    if hasattr(jira_analyzer, "_tools")
+                    else []
+                )
                 jira_analyzer._tools = original_tools + gateway_tools
+                logger.info(f"Added MCP tools to JiraAnalyzer. Total tools: {len(jira_analyzer._tools)}")
 
             # Run the workflow
+            logger.info("Starting workflow execution...")
             response = await self.workflow.run(inputs)
 
             # Restore original tools
@@ -331,6 +339,18 @@ class TriageMultiAgentWorkflow:
                 jira_analyzer._tools = original_tools
 
         logger.info(f"Workflow response: {response}")
+        
+        # Log each agent's output for debugging
+        if response and hasattr(response, "steps") and response.steps:
+            logger.info("=== AGENT OUTPUTS FOR DEBUGGING ===")
+            for i, step in enumerate(response.steps):
+                logger.info(f"\n--- Agent {i+1}: {step.name} ---")
+                if hasattr(step, "final_answer"):
+                    logger.info(f"Final Answer: {step.final_answer}")
+                if hasattr(step, "result"):
+                    logger.info(f"Result: {step.result}")
+                logger.info(f"State: {step.state}")
+            logger.info("=== END AGENT OUTPUTS ===")
 
         # Extract the final decision from the last agent (DecisionMaker)
         if response and hasattr(response, "steps") and response.steps:
@@ -364,6 +384,7 @@ class TriageMultiAgentWorkflow:
             logger.info(f"Decision text: {decision_text}")
 
             # Parse the JSON response from the DecisionMaker agent
+            logger.info("=== PARSING DECISION ===")
             try:
                 import json
                 import re
@@ -372,12 +393,17 @@ class TriageMultiAgentWorkflow:
                 json_match = re.search(r"\{.*\}", decision_text, re.DOTALL)
                 if json_match:
                     decision_data = json.loads(json_match.group())
-                    logger.info(f"Parsed decision data: {decision_data}")
+                    logger.info(f"Successfully parsed JSON decision data: {decision_data}")
 
                     # Create the appropriate result based on resolution type
                     resolution_type = decision_data.get(
                         "resolution_type", "error"
                     ).lower()
+                else:
+                    logger.warning(f"No JSON pattern found in decision text. Text length: {len(decision_text)}")
+                    logger.warning(f"Decision text preview: {decision_text[:200]}...")
+                    decision_data = {}
+                    resolution_type = "error"
 
                     if resolution_type == "backport":
                         result = TriageResult(
