@@ -133,6 +133,10 @@ class TriageMultiAgentWorkflow:
             **CRITICAL: The get_jira_details tool returns a 'remote_links' field containing external links.**
             **You MUST extract URLs from the 'remote_links' field and include them in 'direct_links'.**
             **Look for GitHub PRs, issues, and other upstream references in the remote_links array.**
+            **The remote_links field is at the top level of the response, not inside fields.**
+            **Each remote link has an 'object' field with a 'url' field containing the actual link.**
+            **Example: If remote_links contains [{'object': {'url': 'https://github.com/python/cpython/pull/137027'}}],**
+            **then 'https://github.com/python/cpython/pull/137027' should be added to direct_links.**
 
             IMPORTANT: You MUST use the get_jira_details tool to access the actual Jira issue data. Do not make assumptions based on the issue number alone.
             """,
