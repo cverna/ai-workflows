@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 from beeai_framework.backend import ChatModel
 from beeai_framework.errors import FrameworkError
 from beeai_framework.workflows.agent import AgentWorkflow, AgentWorkflowInput
+from beeai_framework.tools.think import ThinkTool
+from tools.commands import RunShellCommandTool
+from tools.patch_validator import PatchValidatorTool
 from utils import redis_client, mcp_tools
 from observability import setup_observability
 
@@ -319,24 +322,10 @@ class TriageMultiAgentWorkflow:
         ) as gateway_tools:
             logger.info(f"Retrieved {len(gateway_tools)} MCP tools: {[t.name for t in gateway_tools]}")
             
-            # Add MCP tools to the JiraAnalyzer agent
-            jira_analyzer = self.workflow.get_agent("JiraAnalyzer")
-            if jira_analyzer:
-                original_tools = (
-                    jira_analyzer._tools.copy()
-                    if hasattr(jira_analyzer, "_tools")
-                    else []
-                )
-                jira_analyzer._tools = original_tools + gateway_tools
-                logger.info(f"Added MCP tools to JiraAnalyzer. Total tools: {len(jira_analyzer._tools)}")
-
-            # Run the workflow
+            # For now, we'll run the workflow without MCP tools integration
+            # The agents will need to be configured with MCP tools at creation time
             logger.info("Starting workflow execution...")
             response = await self.workflow.run(inputs)
-
-            # Restore original tools
-            if jira_analyzer:
-                jira_analyzer._tools = original_tools
 
         logger.info(f"Workflow response: {response}")
         
