@@ -405,63 +405,54 @@ class TriageMultiAgentWorkflow:
                     decision_data = {}
                     resolution_type = "error"
 
-                    if resolution_type == "backport":
-                        result = TriageResult(
-                            resolution=Resolution.BACKPORT,
-                            data=BackportData(
-                                package=decision_data.get("package_name", ""),
-                                branch=decision_data.get("branch", ""),
-                                patch_url=decision_data.get("patch_url", ""),
-                                justification=decision_data.get("justification", ""),
-                                jira_issue=jira_issue,
+                # Create the appropriate result based on resolution type
+                if resolution_type == "backport":
+                    result = TriageResult(
+                        resolution=Resolution.BACKPORT,
+                        data=BackportData(
+                            package=decision_data.get("package_name", ""),
+                            branch=decision_data.get("branch", ""),
+                            patch_url=decision_data.get("patch_url", ""),
+                            justification=decision_data.get("justification", ""),
+                            jira_issue=jira_issue,
+                        ),
+                    )
+                elif resolution_type == "rebase":
+                    result = TriageResult(
+                        resolution=Resolution.REBASE,
+                        data=RebaseData(
+                            package=decision_data.get("package_name", ""),
+                            version=decision_data.get("version", ""),
+                            branch=decision_data.get("branch", ""),
+                            jira_issue=jira_issue,
+                        ),
+                    )
+                elif resolution_type == "clarification-needed":
+                    result = TriageResult(
+                        resolution=Resolution.CLARIFICATION_NEEDED,
+                        data=ClarificationNeededData(
+                            findings=decision_data.get("findings", ""),
+                            additional_info_needed=decision_data.get(
+                                "additional_info_needed", ""
                             ),
-                        )
-                    elif resolution_type == "rebase":
-                        result = TriageResult(
-                            resolution=Resolution.REBASE,
-                            data=RebaseData(
-                                package=decision_data.get("package_name", ""),
-                                version=decision_data.get("version", ""),
-                                branch=decision_data.get("branch", ""),
-                                jira_issue=jira_issue,
-                            ),
-                        )
-                    elif resolution_type == "clarification-needed":
-                        result = TriageResult(
-                            resolution=Resolution.CLARIFICATION_NEEDED,
-                            data=ClarificationNeededData(
-                                findings=decision_data.get("findings", ""),
-                                additional_info_needed=decision_data.get(
-                                    "additional_info_needed", ""
-                                ),
-                                jira_issue=jira_issue,
-                            ),
-                        )
-                    elif resolution_type == "no-action":
-                        result = TriageResult(
-                            resolution=Resolution.NO_ACTION,
-                            data=NoActionData(
-                                reasoning=decision_data.get("reasoning", ""),
-                                jira_issue=jira_issue,
-                            ),
-                        )
-                    else:
-                        result = TriageResult(
-                            resolution=Resolution.ERROR,
-                            data=ErrorData(
-                                details=decision_data.get(
-                                    "error_details", "Unknown error"
-                                ),
-                                jira_issue=jira_issue,
-                            ),
-                        )
+                            jira_issue=jira_issue,
+                        ),
+                    )
+                elif resolution_type == "no-action":
+                    result = TriageResult(
+                        resolution=Resolution.NO_ACTION,
+                        data=NoActionData(
+                            reasoning=decision_data.get("reasoning", ""),
+                            jira_issue=jira_issue,
+                        ),
+                    )
                 else:
-                    # Fallback if no JSON found
-                    logger.warning("No JSON found in decision text, using fallback")
                     result = TriageResult(
                         resolution=Resolution.ERROR,
                         data=ErrorData(
-                            details=f"Could not parse decision from: {decision_text}",
+                            details=decision_data.get(
+                                "error_details", "Unknown error"
+                            ),
                             jira_issue=jira_issue,
                         ),
                     )
