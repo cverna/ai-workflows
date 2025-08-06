@@ -130,6 +130,10 @@ class TriageMultiAgentWorkflow:
             - keywords: Array of keywords indicating the root cause
             - root_cause: Detailed description of the root cause
 
+            **CRITICAL: The get_jira_details tool returns a 'remote_links' field containing external links.**
+            **You MUST extract URLs from the 'remote_links' field and include them in 'direct_links'.**
+            **Look for GitHub PRs, issues, and other upstream references in the remote_links array.**
+
             IMPORTANT: You MUST use the get_jira_details tool to access the actual Jira issue data. Do not make assumptions based on the issue number alone.
             """,
             llm=self.llm,
