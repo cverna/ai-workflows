@@ -82,8 +82,14 @@ class TriageMultiAgentWorkflow:
         # Add specialized agents
         self._setup_agents()
 
-    def _setup_agents(self) -> None:
+    def _setup_agents(self, mcp_tools_list=None) -> None:
         """Setup specialized agents for different aspects of triage"""
+        
+        # Prepare tools for JiraAnalyzer (include MCP tools if provided)
+        jira_analyzer_tools = [ThinkTool()]
+        if mcp_tools_list:
+            jira_analyzer_tools.extend(mcp_tools_list)
+            logger.info(f"Added {len(mcp_tools_list)} MCP tools to JiraAnalyzer")
 
         # Jira Issue Analyzer Agent
         self.workflow.add_agent(
@@ -125,7 +131,7 @@ class TriageMultiAgentWorkflow:
             IMPORTANT: You MUST use the get_jira_details tool to access the actual Jira issue data. Do not make assumptions based on the issue number alone.
             """,
             llm=self.llm,
-            tools=[ThinkTool()],  # Will be extended with MCP tools during execution
+            tools=jira_analyzer_tools,
         )
 
         # Package Validator Agent
@@ -320,15 +326,21 @@ class TriageMultiAgentWorkflow:
         async with mcp_tools(
             os.getenv("MCP_GATEWAY_URL"), filter=lambda t: t == "get_jira_details"
         ) as gateway_tools:
-            logger.info(f"Retrieved {len(gateway_tools)} MCP tools: {[t.name for t in gateway_tools]}")
-            
-            # For now, we'll run the workflow without MCP tools integration
-            # The agents will need to be configured with MCP tools at creation time
+            logger.info(
+                f"Retrieved {len(gateway_tools)} MCP tools: {[t.name for t in gateway_tools]}"
+            )
+
+            # Recreate the workflow with MCP tools integrated
+            logger.info("Recreating workflow with MCP tools integration...")
+            self.workflow = AgentWorkflow(name="TriageMultiAgentWorkflow")
+            self._setup_agents(gateway_tools)
+
+            # Run the workflow
             logger.info("Starting workflow execution...")
             response = await self.workflow.run(inputs)
 
         logger.info(f"Workflow response: {response}")
-        
+
         # Log each agent's output for debugging
         if response and hasattr(response, "steps") and response.steps:
             logger.info("=== AGENT OUTPUTS FOR DEBUGGING ===")
@@ -382,14 +394,18 @@ class TriageMultiAgentWorkflow:
                 json_match = re.search(r"\{.*\}", decision_text, re.DOTALL)
                 if json_match:
                     decision_data = json.loads(json_match.group())
-                    logger.info(f"Successfully parsed JSON decision data: {decision_data}")
+                    logger.info(
+                        f"Successfully parsed JSON decision data: {decision_data}"
+                    )
 
                     # Create the appropriate result based on resolution type
                     resolution_type = decision_data.get(
                         "resolution_type", "error"
                     ).lower()
                 else:
-                    logger.warning(f"No JSON pattern found in decision text. Text length: {len(decision_text)}")
+                    logger.warning(
+                        f"No JSON pattern found in decision text. Text length: {len(decision_text)}"
+                    )
                     logger.warning(f"Decision text preview: {decision_text[:200]}...")
                     decision_data = {}
                     resolution_type = "error"
@@ -439,9 +455,7 @@ class TriageMultiAgentWorkflow:
                     result = TriageResult(
                         resolution=Resolution.ERROR,
                         data=ErrorData(
-                            details=decision_data.get(
-                                "error_details", "Unknown error"
-                            ),
+                            details=decision_data.get("error_details", "Unknown error"),
                             jira_issue=jira_issue,
                         ),
                     )
