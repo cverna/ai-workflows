@@ -303,8 +303,27 @@ class TriageMultiAgentWorkflow:
             ),
         ]
 
-        # Run the workflow
-        response = await self.workflow.run(inputs)
+        # Run the workflow with MCP tools
+        async with mcp_tools(
+            os.getenv("MCP_GATEWAY_URL"), filter=lambda t: t == "get_jira_details"
+        ) as gateway_tools:
+            # Add MCP tools to the workflow agents
+            for agent_name in ["JiraAnalyzer", "PackageValidator", "FixInvestigator", "DecisionMaker"]:
+                if agent_name in self.workflow.agents:
+                    agent = self.workflow.agents[agent_name]
+                    # Extend the agent's tools with MCP tools
+                    original_tools = agent._tools.copy() if hasattr(agent, '_tools') else []
+                    agent._tools = original_tools + gateway_tools
+
+            # Run the workflow
+            response = await self.workflow.run(inputs)
+
+            # Restore original tools
+            for agent_name in ["JiraAnalyzer", "PackageValidator", "FixInvestigator", "DecisionMaker"]:
+                if agent_name in self.workflow.agents:
+                    agent = self.workflow.agents[agent_name]
+                    if hasattr(agent, '_tools'):
+                        agent._tools = original_tools
 
         logger.info(f"Workflow response: {response}")
 
