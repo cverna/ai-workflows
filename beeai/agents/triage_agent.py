@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from beeai_framework.backend import ChatModel
 from beeai_framework.errors import FrameworkError
 from beeai_framework.workflows.agent import AgentWorkflow, AgentWorkflowInput
+from beeai_framework.agents import AgentExecutionConfig
 from beeai_framework.tools.think import ThinkTool
 from tools.commands import RunShellCommandTool
 from tools.patch_validator import PatchValidatorTool
@@ -85,6 +86,19 @@ class TriageMultiAgentWorkflow:
     def _setup_agents(self, mcp_tools_list=None) -> None:
         """Setup specialized agents for different aspects of triage"""
 
+        # Create execution config with higher iteration limits
+        max_retries_per_step = int(os.getenv("BEEAI_MAX_RETRIES_PER_STEP", 5))
+        total_max_retries = int(os.getenv("BEEAI_TOTAL_MAX_RETRIES", 10))
+        max_iterations = int(
+            os.getenv("BEEAI_MAX_ITERATIONS", 50)
+        )  # Increased default from 20
+
+        execution_config = AgentExecutionConfig(
+            max_retries_per_step=max_retries_per_step,
+            total_max_retries=total_max_retries,
+            max_iterations=max_iterations,
+        )
+
         # Prepare tools for JiraAnalyzer (include MCP tools if provided)
         jira_analyzer_tools = [ThinkTool()]
         if mcp_tools_list:
@@ -95,6 +109,7 @@ class TriageMultiAgentWorkflow:
         self.workflow.add_agent(
             name="JiraAnalyzer",
             role="A specialized agent for analyzing Jira issues",
+            execution=execution_config,
             instructions="""
             You are an expert at analyzing Jira issues for RHEL packages. Your role is to thoroughly analyze the Jira issue and extract all relevant information.
 
@@ -148,6 +163,7 @@ class TriageMultiAgentWorkflow:
         self.workflow.add_agent(
             name="PackageValidator",
             role="A specialized agent for validating package information",
+            execution=execution_config,
             instructions="""
             You are an expert at validating package information for RHEL. Your role is to verify that the identified package and branch exist and are accessible.
 
@@ -184,6 +200,7 @@ class TriageMultiAgentWorkflow:
         self.workflow.add_agent(
             name="FixInvestigator",
             role="A specialized agent for investigating potential fixes",
+            execution=execution_config,
             instructions="""
             You are an expert at investigating potential fixes for RHEL issues. Your role is to systematically search for and validate upstream fixes.
 
@@ -196,63 +213,89 @@ class TriageMultiAgentWorkflow:
                * If the Jira issue already provides a direct link to the fix, use that as your primary lead
                  (e.g. in the commit hash field or comment)
 
-            2. **Systematic Source Investigation:**
-               * Identify the official upstream project and corresponding Fedora package source
-               * Even if the Jira issue provides a direct link to a fix, you need to validate it
-               * When no direct link is provided, you must proactively search for fixes - do not give up easily
-               * Using the details from your analysis, search these sources:
-                 - Bug Trackers (for fixed bugs matching the issue description)
-                 - Git / Version Control (for commit messages, using keywords, CVE IDs, function names, etc.)
-               * Be thorough in your search - try multiple search terms and approaches based on the issue details
-               * Advanced investigation techniques:
-                 - If you can identify specific files, functions, or code sections mentioned in the issue,
-                   locate them in the source code
-                 - Use git history (git log, git blame) to examine changes to those specific code areas
-                 - Look for commits that modify the problematic code, especially those with relevant keywords in commit messages
-                 - Check git tags and releases around the time when the issue was likely fixed
-                 - Search for commits by date ranges when you know approximately when the issue was resolved
-                 - Utilize dates strategically in your search if needed, using the version/release date of the package
-                   currently used in RHEL
-                   - Focus on fixes that came after the RHEL package version date, as earlier fixes would already be included
-                   - For CVEs, use the CVE publication date to narrow down the timeframe for fixes
-                   - Check upstream release notes and changelogs after the RHEL package version date
+                         2. **Systematic Source Investigation:**
+                * **PRIORITY 1: Use direct links from JIRA analysis**
+                  - If the JiraAnalyzer found direct_links (GitHub PRs, commits, etc.), validate these FIRST
+                  - These are often the most accurate and relevant fixes
+                  - Use PatchValidatorTool to verify each direct link before proceeding
+                  - Only proceed to local git investigation if direct links fail validation or are insufficient
+                
+                * **PRIORITY 2: Local git investigation (only if no direct links or validation fails)**
+                  - Clone the upstream repository: `git clone <repository_url>`
+                  - Search for commits with relevant keywords: `git log --grep="<keyword>" --oneline`
+                  - Search for commits by author: `git log --author="<author>" --oneline`
+                  - Search for commits in specific files: `git log -- <file_path> --oneline`
+                  - Search for commits by date range: `git log --since="<date>" --until="<date>" --oneline`
+                  - View commit details: `git show <commit_hash>`
+                
+                * **PRIORITY 3: Broader upstream search**
+                  - Check upstream bug trackers and release notes
+                  - Search for related issues or discussions
+                  - Look for upstream patches or discussions
+                
+                * **Investigation Strategy:**
+                  - Start with the most specific and direct information first
+                  - Only fall back to broader searches if direct links are insufficient
+                  - Be thorough but efficient - don't waste time on git cloning if good direct links exist
+                  - If you can identify specific files, functions, or code sections mentioned in the issue,
+                    locate them in the source code
+                  - Use git history (git log, git blame) to examine changes to those specific code areas
+                  - Look for commits that modify the problematic code, especially those with relevant keywords in commit messages
+                  - Check git tags and releases around the time when the issue was likely fixed
+                  - Search for commits by date ranges when you know approximately when the issue was resolved
+                  - Utilize dates strategically in your search if needed, using the version/release date of the package
+                    currently used in RHEL
+                    - Focus on fixes that came after the RHEL package version date, as earlier fixes would already be included
+                    - For CVEs, use the CVE publication date to narrow down the timeframe for fixes
+                    - Check upstream release notes and changelogs after the RHEL package version date
 
-            3. **Validate the Fix and URL:**
-               * Use the PatchValidatorTool to fetch content from any patch/commit URL you intend to use
-               * The tool will verify the URL is accessible and not an issue reference, then return the content
-               * Once you have the content, you must validate two things:
-                 1. **Is it a patch/diff?** Look for diff indicators like:
-                    - `diff --git` headers
-                    - `--- a/file +++ b/file` unified diff headers
-                    - `@@...@@` hunk headers
-                    - `+` and `-` lines showing changes
-                 2. **Does it fix the issue?** Examine the actual code changes to verify:
-                    - The fix directly addresses the root cause identified in your analysis
-                    - The code changes align with the symptoms described in the Jira issue
-                    - The modified functions/files match those mentioned in the issue
-               * Only proceed with URLs that contain valid patch content AND address the specific issue
-               * If the content is not a proper patch or doesn't fix the issue, continue searching for other fixes
+                         3. **Validate the Fix and URL:**
+                * Use the PatchValidatorTool to fetch content from any patch/commit URL you intend to use
+                * **CRITICAL: Check the PatchValidatorTool results carefully:**
+                  - If `is_accessible` is `false` or `status_code` is 404/error, the URL is NOT valid
+                  - If `is_accessible` is `true`, examine the `content` to validate the patch
+                * For accessible URLs or locally generated patches, validate two things:
+                  1. **Is it a patch/diff?** Look for diff indicators like:
+                     - `diff --git` headers
+                     - `--- a/file +++ b/file` unified diff headers
+                     - `@@...@@` hunk headers
+                     - `+` and `-` lines showing changes
+                  2. **Does it fix the issue?** Examine the actual code changes to verify:
+                     - The fix directly addresses the root cause identified in your analysis
+                     - The code changes align with the symptoms described in the Jira issue
+                     - The modified functions/files match those mentioned in the issue
+                * **Only mark patches as valid if:**
+                  - The PatchValidatorTool reports `is_accessible: true`
+                  - The content contains proper patch/diff format
+                  - The changes directly address the specific issue
+                * If the PatchValidatorTool reports `is_accessible: false` or any error
+                * If the content is not a proper patch or doesn't fix the issue, mark it as invalid
 
-            **Output Format:**
-            Return investigation results in JSON format with these exact fields:
-            - found_fixes: Array of found fixes with commit details
-            - patch_urls: Array of validated patch URLs
-            - validation_results: Array of validation results for each URL
-            - rebase_candidate: boolean indicating if rebase is appropriate
-            - backport_candidate: boolean indicating if backport is appropriate
+                         **Output Format:**
+             Return investigation results in JSON format with these exact fields:
+             - found_fixes: Array of found fixes with commit details
+             - patch_urls: Array of validated patch URLs (only include URLs that passed validation OR locally generated patches)
+             - validation_results: Array of validation results for each URL tested, including:
+               * url: The URL that was tested OR "local_patch" for locally generated patches
+               * is_patch: true only if PatchValidatorTool reported is_accessible: true AND content contains patch format, OR if locally generated patch is valid
+               * fixes_issue: true only if the patch content directly addresses the specific issue
+               * validation_notes: Detailed explanation of validation results, including any errors from PatchValidatorTool or local patch generation
+             - rebase_candidate: boolean indicating if rebase is appropriate
+             - backport_candidate: boolean indicating if backport is appropriate
 
             Use the PatchValidatorTool to validate patch URLs and content.
             
             IMPORTANT: Base your investigation on the actual package name, branch, and issue details identified by the JiraAnalyzer agent.
             """,
             llm=self.llm,
-            tools=[ThinkTool(), PatchValidatorTool()],
+            tools=[ThinkTool(), PatchValidatorTool(), RunShellCommandTool()],
         )
 
         # Decision Maker Agent
         self.workflow.add_agent(
             name="DecisionMaker",
             role="A specialized agent for making triage decisions",
+            execution=execution_config,
             instructions="""
             You are an expert at making triage decisions for RHEL issues. Your role is to analyze all collected information and determine the most appropriate resolution.
 

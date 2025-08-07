@@ -40,22 +40,23 @@ def get_jira_details(
     Returns a dictionary with issue details, comments, and remote links or an error message on failure.
     """
     try:
-        # Get issue details with comments
+        headers = _get_jira_headers(os.getenv("JIRA_TOKEN"))
         response = requests.get(
             urljoin(os.getenv("JIRA_URL"), f"rest/api/2/issue/{issue_key}"),
             params={"expand": "comments"},
-            headers=_get_jira_headers(os.getenv("JIRA_API_TOKEN")),
+            headers=headers,
         )
         response.raise_for_status()
         issue_data = response.json()
 
-        # Get remote links
+        # Remote links in Jira have a specific endpoint, they are important as they often contains links to PRs or mailing lists.
+        # https://community.atlassian.com/forums/Jira-questions/Issue-with-Design-Links-Not-Appearing-in-Remote-Links-API/qaq-p/2698765
         try:
             remote_response = requests.get(
                 urljoin(
                     os.getenv("JIRA_URL"), f"rest/api/2/issue/{issue_key}/remotelink"
                 ),
-                headers=_get_jira_headers(os.getenv("JIRA_API_TOKEN")),
+                headers=headers,
             )
             remote_response.raise_for_status()
             remote_links = remote_response.json()
