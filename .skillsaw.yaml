@@ -1,9 +1,14 @@
 version: 0.21.0
 
-# The Ymir agent prompts (ymir/agents/prompts/**) are Jinja2 templates that the
-# agents consume as instruction text. They are not a recognized skillsaw
-# building block, so lint them explicitly through content-paths to run the
-# content-* rules over their prose.
+# Lint only the Ymir agent prompts. The agents_as_skills/ skills, the skills/
+# directory, and the root AGENTS.md are being deprecated, so exclude them (and
+# the .claude plugin) and pull in the Jinja2 prompt templates via content-paths.
+exclude:
+  - "agents_as_skills/**"
+  - "skills/**"
+  - ".claude/**"
+  - "AGENTS.md"
+
 content-paths:
   - "ymir/agents/prompts/**/*.j2"
 
