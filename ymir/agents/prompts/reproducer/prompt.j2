@@ -30,7 +30,7 @@ Every reproducer created by this agent must follow these principles:
 
 2. *Non-interactive*: Shell script (`.sh`, `.ksh`), one-liner file, or documented `shell -c '...'`. No prompts, no user interaction, no GUI dependencies.
 
-3. *Heavy setups*: If the bug requires a VM, network topology, or multi-service environment, try to simulate the same failure with a local file, small input, or reduced command sequence first. If that is impossible, state "reproducer blocked" and document what is missing.
+3. *Heavy setups*: If the bug requires a VM, network topology, or multi-service environment, simulate the same failure with a local file, small input, or reduced command sequence first. If that is impossible, state "reproducer blocked" and document what is missing.
 
 4. *Objective pass/fail*: The reproducer must have a machine-readable pass/fail criterion. Acceptable methods include:
    - Exit code (0 = PASS, non-zero = FAIL)
@@ -154,7 +154,7 @@ Execute the following steps in order.
    * **If an existing test directory / matching test / open MR is found:**
      1. Continue to steps 3–6 to reserve a Testing Farm machine for **this**
         stream's compose and run the existing test (copy from the found path).
-     2. If the existing test correctly detects the bug on this stream (FAIL on
+     2. If the existing test detects the bug on this stream (FAIL on
         unpatched / expected behavior for a working reproducer):
         - Produce final output with `success`: `true`, `test_already_exists`: `true`,
           `adapted_existing`: `false`, `existing_mr_url` set when an open MR was found,
@@ -553,7 +553,7 @@ Execute the following steps in order.
 
    *Case A: Bug is REPRODUCED (test FAILS as expected — the bug is present)*
    * The detection method fires: crash detected, wrong output observed, timeout hit, memory leak found, etc.
-   * This means the reproducer WORKS. The test correctly detects the bug on the unpatched system.
+   * This means the reproducer WORKS. The test detects the bug on the unpatched system.
    * **Before declaring success, reason about the fixed system:** Would this exact test PASS (exit 0) once the fix is applied? Review the patch's activation conditions and default thresholds. If the fix has a protection threshold that your payload does not exceed, the test will also FAIL on a fixed system — that means the reproducer is broken. Redesign the payload to exceed the fix's defaults so behavior actually changes between fixed and unfixed.
    * Once you are confident the test differentiates fixed from unfixed, the reproducer is verified.
    * Proceed to step 6 (return machine), then produce your final output JSON. The workflow creates the merge request from your output.
@@ -568,7 +568,7 @@ Execute the following steps in order.
    * These are test bugs, not reproduction failures.
    * Continue to 5.5 (iterate) — fix the test, not the detection method.
 
-   Important: On a system WITHOUT the fix applied, a working reproducer should FAIL (Case A). The `rlRun "command" 0` in BeakerLib expects exit code 0 (fixed behavior). When the bug is present, the command exits non-zero, causing the BeakerLib phase to report FAIL. This FAIL means the reproducer is working correctly — it detected the bug.
+   Important: On a system WITHOUT the fix applied, a working reproducer should FAIL (Case A). The `rlRun "command" 0` in BeakerLib expects exit code 0 (fixed behavior). When the bug is present, the command exits non-zero, causing the BeakerLib phase to report FAIL. This FAIL means the reproducer works — it detected the bug.
 
    5.5. Iterate on Failure (Cases B and C)
 
@@ -576,16 +576,16 @@ Execute the following steps in order.
 
    For Case B (bug not triggered):
 
-   * Check the package version: Is the installed version actually vulnerable? If the system already has the fix, the test will PASS (correctly). Verify:
+   * Check the package version: Is the installed version actually vulnerable? If the system already has the fix, the test will PASS as expected. Verify:
      ```
      run_remote_command(ssh_host=<ssh_connection>, command="rpm -q <package_name> --changelog | head -30")
      ```
-     If the fix is already applied on this compose, the test will not reproduce the bug. This is an expected outcome — note it and consider using an older compose, or document that the fix is already present and the reproducer is validated by the test's PASS/FAIL design.
+     If the fix is already applied on this compose, the test will not reproduce the bug. This is an expected outcome — note it and use an older compose, or document that the fix is already present and the reproducer is validated by the test's PASS/FAIL design.
 
-   * Check trigger conditions: Review whether the test correctly exercises the bug:
+   * Check trigger conditions: Review whether the test exercises the bug:
      - Is the correct binary/library being tested? (Check `which <binary>`, `rpm -qf $(which <binary>)`)
      - Are the right flags/options being used?
-     - Is the input data correctly crafted? (Examine it on the remote machine)
+     - Is the input data crafted to trigger the bug? (Examine it on the remote machine)
      - Are environment variables or configuration settings correct?
 
    * Check the detection method: Is the test checking for the right signal?

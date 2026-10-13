@@ -28,10 +28,10 @@ To rebase package <PACKAGE> to version <VERSION> in dist-git branch <DIST_GIT_BR
    check if an existing build for this version exists and to add the issue to that build's
    Errata if appropriate.
 
-2. Try to find past rebases in git history to see how this particular package does rebases.
-   Keep in mind what parts of the spec file are usually changed. At the minimum a rebase should
+2. Find past rebases in git history to see how this particular package does rebases.
+   Note what parts of the spec file are usually changed. At the minimum a rebase should
    change `Version` and `Release` tags (or corresponding macros) and add a new changelog entry,
-   but sometimes other things are changed - if that's the case, try to understand the logic behind it.
+   but sometimes other things are changed - if that's the case, understand the logic behind it.
 
 3. Update the spec file. Set <VERSION> but do not change release, that will be taken care of later.
    Do any other usual changes. Do not modify changelog, a new changelog entry will be added later.

@@ -45,7 +45,7 @@ Goal: Analyze the given issue to determine the correct course of action.
    * Note any functions, files, or methods mentioned
    * Pay attention to any direct links to fixes provided in the issue
    {% if is_older_zstream %}
-   * Do not use upstream patches for older z-streams.
+   * For older z-streams, use downstream patches instead of upstream patches.
    {% endif %}
 
 2. Identify the package name that must be updated:
@@ -167,7 +167,7 @@ You must decide between one of the following actions. Follow these guidelines to
      miss upstream changes. This applies only to choosing between repositories for
      the same upstream project — it does not apply to the Fedora-vs-upstream choice
      above.
-   * Be thorough in your search - try multiple search terms and approaches based on the issue details
+   * Search with multiple terms and approaches based on the issue details
    * Advanced investigation techniques:
      - **Use targeted git searches when the issue describes specific code**:
        * `git log -S "<code_expression>" -- <file>` finds commits that
@@ -202,7 +202,7 @@ You must decide between one of the following actions. Follow these guidelines to
      GitHub operation: use `get_github_patch` for patches,
      `get_github_pull_request` for pull-request metadata, and `get_github_compare` for
      comparisons. This avoids exhausting the shared unauthenticated GitHub rate limit.
-     Never use `curl`, `wget`, or another unauthenticated shell request when one of
+     Use `curl`, `wget`, or another unauthenticated shell request only when none of
      these tools supports the operation. If an unauthenticated GitHub request is
      rate-limited or times out, retry it through the corresponding authenticated tool.
    * Once you have the content, you must validate two things:
@@ -258,7 +258,7 @@ You must decide between one of the following actions. Follow these guidelines to
      whether there are follow-up commits that are **necessary to make the fix
      correct and complete**. A follow-up commit should be included ONLY when:
      - It fixes a bug, crash, or regression introduced by the primary fix
-       (i.e. the primary fix does not work correctly without it)
+       (i.e. the primary fix does not work without it)
      - It completes the fix for the same issue/CVE when the primary commit
        only addressed part of the problem (e.g. a second code path still
        vulnerable to the same CVE)
@@ -290,7 +290,7 @@ You must decide between one of the following actions. Follow these guidelines to
      `get_github_patch` for HTTPS GitHub URLs and `get_patch_from_url` otherwise,
      then verify they are real patches) and include them
      in your patch_urls list, ordered chronologically (earliest first).
-   * **Prefer individual commit URLs; collapse to PR/MR when appropriate**:
+   * **Prefer individual commit URLs; collapse to PR/MR only when one of the following applies**:
      Start by searching for individual fixing commits and use their
      `.patch` URLs in your `patch_urls` list. This is the default.
      However, use a single PR/MR `.patch` URL instead when either:
@@ -337,7 +337,7 @@ You must decide between one of the following actions. Follow these guidelines to
        dependency is a buildroot toolchain/library the package compiles or links against
        (e.g., golang, rust, openssl) or a *source* vendor tarball that is compiled during %build.
        Bumping the Release and rebuilding against the updated dependency picks up the fix.
-     - **Shipped as a pre-built/pre-compiled bundled artifact → do NOT use "rebuild".** This is
+     - **Shipped as a pre-built/pre-compiled bundled artifact → use "backport", not "rebuild".** This is
        the case when the vulnerable dependency is delivered as an already-built blob that %build
        merely unpacks and installs without recompiling it from the patched source — e.g. a
        prebuilt webpack/JS bundle tarball (`Source*: *-webpack-*.tar.*`), vendored minified JS,

@@ -624,7 +624,7 @@ class TestTriageTemplate:
         )
         assert "RHEL-12345" in result
         assert "zstream_search" in result
-        assert "Do not use upstream patches for older z-streams" in result
+        assert "use downstream patches instead of upstream patches" in result
 
     def test_renders_needs_internal_fix(self):
         result = render_template(

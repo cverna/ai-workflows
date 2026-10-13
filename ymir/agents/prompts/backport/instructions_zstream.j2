@@ -136,7 +136,7 @@ a backport that won't actually fix the shipped RPM.
             `git -C <DISTGIT_SOURCE> diff <commit_hash>^..<commit_hash> -- *.spec`
           - Note what Patch tags and `%prep` entries were added. Use this as
             reference for step 4 to apply equivalent changes to the target
-            branch's spec file, adapting patch numbering as needed.
+            branch's spec file, renumbering patches to match the target branch.
 
       3d. After processing all commits, continue to step 4 to update the
           spec file with ALL new patches.
@@ -172,7 +172,7 @@ a backport that won't actually fix the shipped RPM.
 
       3h. Find and checkout the base version in upstream:
           - Use `find_base_commit` tool with <UPSTREAM_REPO> path and package version from 3f
-          - If no matching tag found, try to find the base commit manually
+          - If no matching tag is found, find the base commit manually
             using `view` and `run_shell_command` tools
           - Look for any tags or commits that might correspond to the package version
           - Only fall back to approach C if you cannot find any reasonable base commit
@@ -323,8 +323,8 @@ General instructions:
   and all binaries, manpages, and user-facing documentation.
 - For more information how the package is being built, inspect the
   RPM spec file and read sections `%prep` and `%build`.
-- If there is a complex conflict, you are required to properly resolve
-  it by applying the core functionality of the proposed patch.
+- If there is a complex conflict, resolve it by applying the core
+  functionality of the proposed patch.
 - When using approach B (upstream cherry-pick workflow), you have access to
   <UPSTREAM_REPO> (the cloned upstream repository).
   You can explore it to find clues for resolving conflicts: examine commit history, related changes,

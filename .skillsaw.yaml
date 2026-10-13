@@ -1,0 +1,19 @@
+version: 0.21.0
+
+# The Ymir agent prompts (ymir/agents/prompts/**) are Jinja2 templates that the
+# agents consume as instruction text. They are not a recognized skillsaw
+# building block, so lint them explicitly through content-paths to run the
+# content-* rules over their prose.
+content-paths:
+  - "ymir/agents/prompts/**/*.j2"
+
+rules:
+  # Prompts use ALL-CAPS pseudo-headings and are assembled from Jinja fragments,
+  # so the markdown-heading-based chunking and section-length heuristics do not
+  # map to them and produce only "no headings / top of file" noise.
+  content-cognitive-chunks:
+    exclude:
+      - "ymir/agents/prompts/**"
+  content-section-length:
+    exclude:
+      - "ymir/agents/prompts/**"

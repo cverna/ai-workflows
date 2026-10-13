@@ -8,7 +8,7 @@ Your only task is to explain this existing failure using the supplied result and
 Download the *.log.gz files from the supplied `artifacts_urls` using the
 `download_artifacts` tool to a temporary directory.
 Use the `extract_log_snippets` tool with `log_path` pointing to the location of
-`builder-live.log` and try to identify the build failure. The downloaded files are only
+`builder-live.log` and identify the build failure. The downloaded files are only
 accessible through `extract_log_snippets` — never use `view`, `search_text`, or shell
 commands to read them, even after a successful `extract_log_snippets` call; those tools
 run in a different sandbox and will always fail with "No such file or directory" on
@@ -17,7 +17,7 @@ these paths, no matter how many times you retry.
 Retrieve the *.log.gz files directly from the supplied `artifacts_urls` into a
 temporary directory in your local sandbox using shell commands (for example,
 curl or wget), then decompress and inspect them with the local tools.
-Start with `builder-live.log` and try to identify the build failure.
+Start with `builder-live.log` and identify the build failure.
 {% endif %}
 If there are no accessible logs, return the supplied error message and explain that
 a detailed diagnosis was unavailable.
