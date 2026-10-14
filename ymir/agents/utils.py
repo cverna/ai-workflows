@@ -64,7 +64,11 @@ def resolve_chat_model_override(agent_type: str) -> None:
 
 def is_reasoning_enabled(model_name: str | None = None) -> bool:
     chat_model = model_name if model_name is not None else os.environ.get("CHAT_MODEL", "")
-    return "claude" in chat_model and bool(os.getenv("REASONING_EFFORT"))
+    reasoning_effort = os.getenv("REASONING_EFFORT", "")
+    return ("claude" in chat_model or chat_model.startswith("openai:")) and reasoning_effort.lower() not in (
+        "",
+        "none",
+    )
 
 
 def get_chat_model(model_name: str | None = None) -> ChatModel:
@@ -76,6 +80,7 @@ def get_chat_model(model_name: str | None = None) -> ChatModel:
     # but should yield more predictable results, similar for top_p (tried 0.5)
     temperature = float(os.getenv("TEMPERATURE", "0.6"))
     reasoning_effort = os.getenv("REASONING_EFFORT")
+    reasoning_enabled = is_reasoning_enabled(model_name=model_name)
 
     settings: dict[str, Any] = {"num_retries": int(os.getenv("LITELLM_NUM_RETRIES", 3))}
 
@@ -95,8 +100,8 @@ def get_chat_model(model_name: str | None = None) -> ChatModel:
         # this the preferred way to set parameters, don't do options=...
         # it was changed in beeai 0.1.48
         ChatModelParameters(
-            # Anthropic requires temperature=1 when extended thinking is enabled
-            temperature=1 if "claude" in chat_model and reasoning_effort else temperature,
+            # Anthropic and OpenAI reasoning models require temperature=1 when reasoning is enabled
+            temperature=1 if reasoning_enabled else temperature,
             reasoning_effort=reasoning_effort,
         ),
         timeout=int(os.getenv("CHAT_MODEL_TIMEOUT", 1200)),

@@ -28,6 +28,7 @@ from ymir.common.utils import (
     get_all_patches,
     get_latest_candidate_build,
 )
+from ymir.common.validators import ToolPath
 from ymir.common.version_utils import get_maintenance_rhel_branch
 from ymir.tools.base import CloneableTool as Tool
 from ymir.tools.base import file_lock
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 class GetPackageInfoToolInput(BaseModel):
-    spec: Path = Field(description="Path to a spec file")
+    spec: ToolPath = Field(description="Path to a spec file")
 
 
 class PackageInfo(BaseModel):
@@ -142,7 +143,7 @@ class GetPackageInfoTool(Tool[GetPackageInfoToolInput, ToolRunOptions, GetPackag
 
 
 class AddChangelogEntryToolInput(BaseModel):
-    spec: Path = Field(description="Path to a spec file")
+    spec: ToolPath = Field(description="Path to a spec file")
     content: list[str] = Field(
         description="""
         Content of the entry as a list of lines, maximum line length should be 80 characters,
@@ -188,7 +189,7 @@ class AddChangelogEntryTool(Tool[AddChangelogEntryToolInput, ToolRunOptions, Str
 
 
 class UpdateReleaseToolInput(BaseModel):
-    spec: Path = Field(description="Path to a spec file")
+    spec: ToolPath = Field(description="Path to a spec file")
     package: str = Field(description="Package name")
     dist_git_branch: str = Field(description="dist-git branch")
     rebase: bool = Field(description="Whether the Release update is done as part of a rebase")

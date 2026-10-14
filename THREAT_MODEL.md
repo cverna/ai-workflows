@@ -92,9 +92,10 @@ redirects and other caller-supplied URLs before making a request.
 | Konflux git-auth Secret (`GITLAB_TOKEN`) | Temporary copy of the gateway's GitLab token, used by the PipelineRun to clone the pushed fork commit | critical |
 | Source, patches, and spec-file changes produced by agents | Content that flows directly into RHEL/CentOS Stream builds if merged | critical |
 | Build-validation result and RPM pipeline definition | Integrity of the build status and executable pipeline code used to accept or diagnose an agent's change | high |
-| Local `.secrets/` credential bundle (dev machines, CI runners) | Co-located keytabs, GitLab PAT, Jira token, GCP keys | critical |
+| Local `.secrets/` credential bundle (dev machines, CI runners) | Co-located keytabs, GitLab PAT, Jira token, GCP keys, and direct LLM provider API keys (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) | critical |
 | Jira API token | Read/write access to RHEL/PACKIT Jira issues, including status transitions that trigger errata creation and compose inclusion | high |
 | GCP Vertex AI service-account keys (dev/prod) | Access to hosted LLM inference; misuse enables cost abuse or model manipulation | high |
+| Direct LLM provider API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) and external OpenAI/Anthropic/Gemini inference APIs | Downstream LLM inference service dependency used by agents when `CHAT_MODEL` is configured with `openai:` (or `anthropic:` / `gemini:`); agents send system prompts, Jira issue/MR content, and tool outputs to the provider for model inference using the API credential from `beeai-agent.env` (`OPENAI_API_KEY` is loaded into agent containers, never exposed to tools, and misuse enables cost abuse or model manipulation) | high |
 | Redis/Valkey task queues (`triage_queue`, `supervisor_work_queue`, `merge_consolidation_queue`) | Integrity of in-flight automation state; controls which package/branch/issue is processed next | high |
 | Container images (`quay.io/jotnar/*`) | Build supply-chain integrity for all deployed agent/service images | high |
 | Testing Farm API token | Ability to trigger test runs against package builds | medium |
