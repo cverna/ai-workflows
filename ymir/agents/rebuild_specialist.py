@@ -8,6 +8,7 @@ and only the verdict returns to triage.
 """
 
 import logging
+import os
 
 from beeai_framework.memory import UnconstrainedMemory
 from beeai_framework.middleware.trajectory import GlobalTrajectoryMiddleware
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 # Jira tools the dependency-readiness check needs, served by the MCP gateway.
 REBUILD_SPECIALIST_TOOL_NAMES = ("search_jira_issues", "get_jira_details")
 
+# Optional per-specialist model; falls back to the parent's CHAT_MODEL.
+REBUILD_SPECIALIST_MODEL_ENV = "REBUILD_SPECIALIST_MODEL"
+
 
 def create_rebuild_specialist(gateway_tools, local_tool_options=None) -> ReasoningAgent:
     """Build the rebuild specialist target invoked via ``HandoffTool``."""
@@ -34,6 +38,10 @@ def create_rebuild_specialist(gateway_tools, local_tool_options=None) -> Reasoni
         ThinkTool(),
         *[tool for tool in gateway_tools if tool.name in REBUILD_SPECIALIST_TOOL_NAMES],
     ]
+    model_override = os.getenv(REBUILD_SPECIALIST_MODEL_ENV)
+    logger.info(
+        "Rebuild specialist model: %s", model_override or os.environ.get("CHAT_MODEL")
+    )
     return ReasoningAgent(
         name="RebuildSpecialist",
         description=(
@@ -41,7 +49,7 @@ def create_rebuild_specialist(gateway_tools, local_tool_options=None) -> Reasoni
             "dependency ticket, validates its fixVersion against the triaged stream, and "
             "returns a verdict for the rebuild decision."
         ),
-        llm=get_chat_model(),
+        llm=get_chat_model(model_override),
         unconstrained=is_reasoning_enabled(),
         tool_call_checker=get_tool_call_checker_config(),
         tools=tools,

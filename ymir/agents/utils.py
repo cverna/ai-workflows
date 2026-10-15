@@ -44,8 +44,13 @@ def is_reasoning_enabled() -> bool:
     return "claude" in chat_model and bool(os.getenv("REASONING_EFFORT"))
 
 
-def get_chat_model() -> ChatModel:
-    chat_model = os.environ["CHAT_MODEL"]
+def get_chat_model(model_name: str | None = None) -> ChatModel:
+    """Build the chat model.
+
+    ``model_name`` overrides ``CHAT_MODEL`` for this instance only, so a single
+    agent (e.g. a HandoffTool target) can run on a different model than the rest.
+    """
+    chat_model = model_name or os.environ["CHAT_MODEL"]
     # lowering the temperature makes the model stop backporting too soon
     # but should yield more predictable results, similar for top_p (tried 0.5)
     temperature = float(os.getenv("TEMPERATURE", "0.6"))
