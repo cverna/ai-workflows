@@ -4,7 +4,6 @@ import pytest
 from beeai_framework.middleware.trajectory import GlobalTrajectoryMiddleware
 from beeai_framework.tools import ToolError
 
-from ymir.agents.utils import get_reference_dir
 from ymir.tools.unprivileged.prompt_reference import (
     LoadPromptInput,
     LoadPromptTool,
@@ -82,13 +81,3 @@ async def test_unknown_reference_raises(references_dir):
         await tool.run(input=LoadPromptInput(name="does-not-exist")).middleware(
             GlobalTrajectoryMiddleware(pretty=True)
         )
-
-
-def test_triage_references_are_wired():
-    """get_reference_dir() resolves the real triage references and validate_fix loads.
-
-    Guards the silent failure mode: a wrong directory or extension would leave
-    the tool with an empty catalog rather than raising.
-    """
-    tool = LoadPromptTool(get_reference_dir("triage"))
-    assert "validate_fix" in tool.description

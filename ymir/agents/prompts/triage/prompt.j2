@@ -194,9 +194,14 @@ You must decide between one of the following actions. Follow these guidelines to
        - Check upstream release notes and changelogs after the RHEL package version date
 
    2.3. Validate the Fix and URL
-   * Call the `load_prompt` tool with `name: "validate_fix"` to load the full
-     validation procedure, then follow it to confirm every patch URL is a real,
-     merged patch that fixes this issue before deciding the outcome.
+   * Hand off to the `validate_patches` tool with the candidate patch/commit URLs you
+     found (and the CVE id(s) if any). It fetches and validates them — patch format,
+     CVE match, merged-only rules, required follow-up commits — and returns a JSON
+     verdict:
+     - "valid": use its patch_urls (earliest first) and cve_ids for the backport.
+     - "postponed_pr_pending": an unmerged PR/MR addresses the issue; resolve as
+       "postponed_pr_pending" with its blocker_references as the PR/MR URL.
+     - "invalid" or "clarification-needed": keep searching, or resolve as in step 2.4.
 
    2.4. Decide the Outcome
    {% if not is_older_zstream %}

@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 import ymir.agents.tasks as tasks
 from ymir.agents.cve_applicability_agent import build_applicability_prompt, create_applicability_agent
 from ymir.agents.observability import setup_observability
+from ymir.agents.patch_validator import create_patch_validator
 from ymir.agents.reasoning_agent import ReasoningAgent
 from ymir.agents.rebase_consolidation import (
     check_and_queue_primary_if_ready,
@@ -35,7 +36,6 @@ from ymir.agents.utils import (
     build_agent_factory_with_mock_repos,
     get_agent_execution_config,
     get_chat_model,
-    get_reference_dir,
     get_tool_call_checker_config,
     is_reasoning_enabled,
     mcp_tools,
@@ -97,7 +97,6 @@ from ymir.tools.unprivileged.commands import RunShellCommandTool
 
 ## UpstreamSearchTool is currently unmaintained and disabled.
 # from ymir.tools.unprivileged.upstream_search import UpstreamSearchTool
-from ymir.tools.unprivileged.prompt_reference import LoadPromptTool
 from ymir.tools.unprivileged.version_mapper import VersionMapperTool
 
 logger = logging.getLogger(__file__)
@@ -574,6 +573,7 @@ async def _record_branch_creation_policy(state: TriageState, package: str, avail
 
 def create_triage_agent(gateway_tools, local_tool_options=None) -> ReasoningAgent:
     rebuild_specialist = create_rebuild_specialist(gateway_tools, local_tool_options)
+    patch_validator = create_patch_validator(gateway_tools, local_tool_options)
     return ReasoningAgent(
         name="TriageAgent",
         llm=get_chat_model(),
@@ -583,7 +583,16 @@ def create_triage_agent(gateway_tools, local_tool_options=None) -> ReasoningAgen
             ThinkTool(),
             RunShellCommandTool(options=local_tool_options) if local_tool_options else RunShellCommandTool(),
             VersionMapperTool(),
-            LoadPromptTool(get_reference_dir("triage")),
+            HandoffTool(
+                patch_validator,
+                name="validate_patches",
+                description=(
+                    "Hand off to the Patch Validator with the candidate patch/commit URLs "
+                    "you found for a bug/CVE. It fetches and validates them (patch format, "
+                    "CVE match, merged-only, follow-up commits) and returns a JSON verdict "
+                    "(verdict, patch_urls, cve_ids, blocker_references)."
+                ),
+            ),
             HandoffTool(
                 rebuild_specialist,
                 name="rebuild_readiness",
@@ -631,7 +640,8 @@ def create_triage_agent(gateway_tools, local_tool_options=None) -> ReasoningAgen
             ConditionalRequirement("search_jira_issues", only_after=["get_jira_details"]),
             ConditionalRequirement("zstream_search", only_after=["get_jira_details"]),
             ConditionalRequirement("clone_repository", only_after=["get_jira_details"]),
-            ConditionalRequirement("load_prompt", only_after=["get_jira_details"]),
+            ConditionalRequirement("validate_patches", only_after=["get_jira_details"]),
+            ConditionalRequirement("rebuild_readiness", only_after=["get_jira_details"]),
         ],
         middlewares=[GlobalTrajectoryMiddleware(pretty=True, target=get_trajectory_writeable())],
         role="Red Hat Enterprise Linux developer",

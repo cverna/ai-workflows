@@ -616,11 +616,10 @@ class TestTriageTemplate:
         assert "zstream_search" not in result
         assert "centos-stream" in result
         assert "redhat/rhel/rpms" not in result
-        # Patch-validation detail is deferred to the load_prompt tool.
-        assert "load_prompt" in result
-        assert "Check for follow-up commits" not in result
-        # Rebuild readiness is delegated to the rebuild specialist via HandoffTool.
+        # Patch validation and rebuild readiness are delegated to sub-agents.
+        assert "validate_patches" in result
         assert "rebuild_readiness" in result
+        assert "Check for follow-up commits" not in result
         assert "Check dependency readiness" not in result
 
     def test_renders_older_zstream(self):
