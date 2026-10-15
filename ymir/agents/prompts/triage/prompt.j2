@@ -264,12 +264,21 @@ You must decide between one of the following actions. Follow these guidelines to
    linked C libraries). It does NOT cover dependencies shipped as pre-built bundled artifacts
    (e.g. a prebuilt webpack/JS bundle) — those are handled in step 2.4 as backport/not-affected.
 
-   3.1. Call the `load_prompt` tool with `name: "rebuild"` to load the full
-        rebuild procedure — search for the dependency ticket, validate its
-        fixVersion, verify Fixed in Build / dropped resolutions, handle the
-        postponed_dependency outcome, and set the Jira fields — then follow it.
+   3.1. Hand off to the `rebuild_readiness` tool to check dependency readiness. Give it a
+        task naming the package, the target stream and the CVE/issue, and ask for its JSON
+        verdict. It searches Jira for the dependency ticket and verifies it against the
+        correct version stream. Apply the verdict:
+        - "rebuild" — set dependency_issue and dependency_component from the verdict.
+        - "postponed_dependency" — the dependency fix has not shipped yet; set
+          pending_issues to the dependency issue and blocker_references to its key.
+        - "not-affected" — the dependency fix was dropped/rejected, so no rebuild is needed.
+        - "clarification-needed" — no dependency ticket exists for the correct version stream.
+        Never fall back to a tracker from a different version stream.
+   3.2. Provide a clear justification explaining why a rebuild is needed and how it
+        addresses the issue.
+   3.3. If rebuild: set Jira fields as per the instructions below.
    {% if is_older_zstream %}
-   3.5. Check the Jira issue description and comments for any mention of a build
+   3.4. Check the Jira issue description and comments for any mention of a build
         side-tag. A side-tag is a Koji build tag name that the build pipeline
         needs when building packages for this z-stream (e.g.,
         "rhel-9.4.0-z-build-sidetag-188995"). If a side-tag is mentioned, set

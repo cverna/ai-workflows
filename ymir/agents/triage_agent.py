@@ -14,6 +14,7 @@ from beeai_framework.agents.requirement.requirements.conditional import (
 from beeai_framework.errors import FrameworkError
 from beeai_framework.memory import UnconstrainedMemory
 from beeai_framework.middleware.trajectory import GlobalTrajectoryMiddleware
+from beeai_framework.tools.handoff import HandoffTool
 from beeai_framework.tools.think import ThinkTool
 from beeai_framework.workflows import Workflow
 from pydantic import BaseModel, Field
@@ -28,6 +29,7 @@ from ymir.agents.rebase_consolidation import (
     queue_siblings_for_triage,
 )
 from ymir.agents.rebuild_consolidation import find_rebuild_siblings
+from ymir.agents.rebuild_specialist import create_rebuild_specialist
 from ymir.agents.tasks import InvalidReproducerConfigError
 from ymir.agents.utils import (
     build_agent_factory_with_mock_repos,
@@ -571,6 +573,7 @@ async def _record_branch_creation_policy(state: TriageState, package: str, avail
 
 
 def create_triage_agent(gateway_tools, local_tool_options=None) -> ReasoningAgent:
+    rebuild_specialist = create_rebuild_specialist(gateway_tools, local_tool_options)
     return ReasoningAgent(
         name="TriageAgent",
         llm=get_chat_model(),
@@ -581,6 +584,16 @@ def create_triage_agent(gateway_tools, local_tool_options=None) -> ReasoningAgen
             RunShellCommandTool(options=local_tool_options) if local_tool_options else RunShellCommandTool(),
             VersionMapperTool(),
             LoadPromptTool(get_reference_dir("triage")),
+            HandoffTool(
+                rebuild_specialist,
+                name="rebuild_readiness",
+                description=(
+                    "Hand off to the Rebuild Specialist to check dependency readiness for a "
+                    "rebuild decision. Pass a task naming the package, the target stream and "
+                    "the CVE/issue. It searches Jira for the dependency ticket and returns a "
+                    "JSON verdict (decision, dependency_issue, dependency_component)."
+                ),
+            ),
         ]
         + [
             t

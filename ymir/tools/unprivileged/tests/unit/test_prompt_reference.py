@@ -92,4 +92,3 @@ def test_triage_references_are_wired():
     """
     tool = LoadPromptTool(get_reference_dir("triage"))
     assert "validate_fix" in tool.description
-    assert "rebuild" in tool.description
