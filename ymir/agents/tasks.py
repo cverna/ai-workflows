@@ -1507,6 +1507,7 @@ async def clone_and_prep_sources(
     dist_git_branch: str,
     available_tools: list[Tool],
     jira_issue: str,
+    workspace_dir: Path,
     ref: str | None = None,
     dist_git_namespace: str | None = None,
 ) -> tuple[Path, Path, bool, str | None]:
@@ -1514,6 +1515,7 @@ async def clone_and_prep_sources(
     Clone dist-git repo and run centpkg/rhpkg sources + prep.
     Returns (local_clone, unpacked_sources, prep_succeeded, builddir).
     The caller must clean up *builddir* (a /tmp path) when done.
+    The applicability clone lives within the supplied execution workspace.
     Read-only: no fork, no push — just for source analysis.
 
     Falls back to manual archive extraction if prep fails (e.g. missing
@@ -1526,7 +1528,7 @@ async def clone_and_prep_sources(
     """
     if not jira_issue or Path(jira_issue).is_absolute() or ".." in jira_issue:
         raise ValueError(f"Invalid jira_issue: {jira_issue}")
-    working_dir = Path(os.environ["GIT_REPO_BASEPATH"]) / APPLICABILITY_DIR / jira_issue
+    working_dir = workspace_dir / APPLICABILITY_DIR
     if working_dir.is_dir():
         _force_rmtree(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)

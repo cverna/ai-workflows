@@ -20,7 +20,7 @@ def sanitize_url(text: str) -> str:
 
 APPLICABILITY_DIR = "applicability"
 MERGE_REQUESTS_DIR = "merge_requests"
-EXECUTION_WORK_DIRS = {"Backport", "Rebase", "Rebuild"}
+EXECUTION_WORK_DIRS = {"Backport", "Rebase", "Rebuild", "Triage"}
 NESTED_WORK_DIRS = {APPLICABILITY_DIR, MERGE_REQUESTS_DIR, *EXECUTION_WORK_DIRS}
 ACTIVE_WORKSPACE_MARKER = ".ymir-active"
 

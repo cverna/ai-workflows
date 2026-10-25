@@ -30,6 +30,24 @@ Three agents process tasks through Redis queues:
 - **Backport Agent**: Applies specific fixes/patches to packages. It looks for patches that are linked, attached and present in the description or comments in the issue. It tries to apply the patch and resolve any conflicts that may arise during the backport process.
 - **Issue Verification Agent**: Manages the post-fix lifecycle of a JIRA issue — from merged MR through errata creation, testing analysis, and status transitions to RELEASE_PENDING. Migrated from the supervisor's `IssueHandler`.
 
+### Triage workspaces
+
+Every triage invocation, including direct runs and retries, owns a fresh
+`$GIT_REPO_BASEPATH/Triage/<jira-issue>/run-<unique-suffix>/` directory allocated
+by Python's `TemporaryDirectory`. Investigation clones and applicability checkouts live
+there, and the shell tool starts there without changing the worker process's
+current directory. Prompts direct all clones and recovery operations to that
+workspace rather than shared package-level paths.
+
+Cleanup only removes the invocation's directory. An active-workspace marker
+protects it from stale-repository collection; leftovers after a crash or failed
+NFS cleanup are eligible for the existing seven-day cleanup.
+
+This avoids accidental checkout collisions when the agent follows its workspace
+instructions. It is not a filesystem sandbox: neither shell commands nor the
+clone tool are restricted to this run's directory. Enforcing that boundary is
+a separate hardening task.
+
 ### Z-stream branch consistency
 
 Before creating a working branch, backport, rebase, rebuild, and MR consolidation

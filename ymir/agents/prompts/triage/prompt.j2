@@ -21,6 +21,17 @@ assumption against the actual source code.
 
 Goal: Analyze the given issue to determine the correct course of action.
 
+**Execution workspace**: `{{ working_directory }}`
+
+This directory belongs exclusively to this run. Keep every investigation clone,
+temporary checkout, and recovery operation under it, including shell commands.
+Use `{{ working_directory }}/<package_name>` for dist-git,
+`{{ working_directory }}/<package_name>-upstream` for upstream sources, and
+`{{ working_directory }}/<package_name>-fedora` for Fedora dist-git.
+Do not use shared package-level paths such as `/git-repos/<package_name>-upstream`,
+or read, remove, or replace another run's checkout. If a clone fails, recover only
+within your own directory.
+
 **Initial Analysis Steps**
 
 1. Open the {{ issue }} Jira issue and thoroughly analyze it:
@@ -53,7 +64,7 @@ Goal: Analyze the given issue to determine the correct course of action.
    {% if needs_internal_fix and internal_target_branch %}
    * Use the clone_repository tool to clone `https://gitlab.com/redhat/rhel/rpms/<package_name>`
      with branch `{{ internal_target_branch }}` and
-     clone_path `/git-repos/{{ issue }}/<package_name>`.
+     clone_path `{{ working_directory }}/<package_name>`.
      If the clone fails (branch or repo not found), fall back to cloning
      `https://gitlab.com/redhat/centos-stream/rpms/<package_name>` using the same tool
      (keep the same clone_path).

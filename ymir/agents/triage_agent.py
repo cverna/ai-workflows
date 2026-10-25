@@ -4,7 +4,9 @@ import os
 import shutil
 import sys
 import traceback
+from contextlib import asynccontextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 import sentry_sdk
@@ -77,6 +79,7 @@ from ymir.common.utils import (
     get_latest_candidate_build,
     init_sentry,
 )
+from ymir.common.validators import AbsolutePath
 from ymir.common.version_utils import (
     construct_internal_branch_name,
     detect_modular_issue,
@@ -89,7 +92,7 @@ from ymir.common.version_utils import (
     parse_rhel_version,
     parse_zstream_branch_name,
 )
-from ymir.tools.privileged.utils import APPLICABILITY_DIR
+from ymir.tools.privileged.utils import ACTIVE_WORKSPACE_MARKER
 from ymir.tools.unprivileged.commands import RunShellCommandTool
 
 ## UpstreamSearchTool is currently unmaintained and disabled.
@@ -419,13 +422,20 @@ async def _map_version_to_branch(
 # All schemas are now imported from ymir.common.models
 
 
+class TriagePromptInput(InputSchema):
+    working_directory: AbsolutePath
+
+
 async def render_prompt(
     input: InputSchema,
+    *,
+    working_directory: Path,
     fix_version: str | None = None,
     cve_eligibility_result: CVEEligibilityResult | None = None,
     jira_summary: str | None = None,
     downstream_component: str | None = None,
 ) -> str:
+    prompt_input = TriagePromptInput(**input.model_dump(), working_directory=working_directory)
     older_zstream = bool(fix_version and await is_older_zstream(fix_version))
 
     updates: dict = {"is_older_zstream": older_zstream}
@@ -458,7 +468,7 @@ async def render_prompt(
                 updates["needs_internal_fix"] = True
                 updates["internal_target_branch"] = internal_branch
 
-    input_with_flag = input.model_copy(update=updates)
+    input_with_flag = prompt_input.model_copy(update=updates)
     return render_template("triage/prompt.j2", input_with_flag)
 
 
@@ -652,6 +662,24 @@ def create_triage_agent(gateway_tools, local_tool_options=None) -> ReasoningAgen
     )
 
 
+@asynccontextmanager
+async def _triage_workspace(jira_issue: str):
+    """Own a unique workspace, including concurrent direct invocations of one issue."""
+    if not jira_issue or jira_issue in {".", ".."} or Path(jira_issue).name != jira_issue:
+        raise ValueError(f"Invalid jira_issue: {jira_issue}")
+    basepath = Path(os.environ.get("GIT_REPO_BASEPATH", "/git-repos")).resolve()
+    issue_directory = (basepath / "Triage" / jira_issue).resolve()
+    if not issue_directory.is_relative_to(basepath):
+        raise ValueError("Triage workspace must be under GIT_REPO_BASEPATH")
+    issue_directory.mkdir(parents=True, exist_ok=True)
+    # Keep temporary workspaces on the volume shared with the MCP gateway.
+    # Failed NFS cleanup can be retried by the normal stale-workspace collector.
+    with TemporaryDirectory(prefix="run-", dir=issue_directory, ignore_cleanup_errors=True) as directory:
+        working_directory = Path(directory)
+        (working_directory / ACTIVE_WORKSPACE_MARKER).touch()
+        yield working_directory
+
+
 async def run_workflow(
     jira_issue,
     dry_run,
@@ -660,13 +688,18 @@ async def run_workflow(
     force_cve_triage=False,
     user_triggered=False,
 ):
-    local_tool_options = None
-    if mock_env := get_mock_local_tool_env(jira_issue):
-        local_tool_options = {"env": mock_env}
-
     cleanup = {"builddir": None}
 
-    async with mcp_tools(os.getenv("MCP_GATEWAY_URL"), call_meta={"jira_issue": jira_issue}) as gateway_tools:
+    async with (
+        _triage_workspace(jira_issue) as working_directory,
+        mcp_tools(
+            os.getenv("MCP_GATEWAY_URL"),
+            call_meta={"jira_issue": jira_issue},
+        ) as gateway_tools,
+    ):
+        local_tool_options = {"working_directory": working_directory}
+        if mock_env := get_mock_local_tool_env(jira_issue):
+            local_tool_options["env"] = mock_env
         triage_agent = triage_agent_factory(gateway_tools, local_tool_options)
 
         workflow = Workflow(TriageState, name="TriageWorkflow")
@@ -863,6 +896,7 @@ async def run_workflow(
                     cve_eligibility_result=state.cve_eligibility_result,
                     jira_summary=state.jira_summary,
                     downstream_component=state.downstream_component,
+                    working_directory=working_directory,
                 ),
                 expected_output=render_template("triage/output_format.j2"),
                 **get_agent_execution_config(),
@@ -1108,6 +1142,7 @@ async def run_workflow(
                     jira_issue=state.jira_issue,
                     ref=base_ref,
                     dist_git_namespace=state.dist_git_namespace,
+                    workspace_dir=working_directory,
                 )
             except Exception as e:
                 logger.warning(f"Could not prep sources for applicability check: {e}")
@@ -1435,11 +1470,6 @@ async def run_workflow(
             response = await workflow.run(TriageState(jira_issue=jira_issue))
             return response.state
         finally:
-            applicability_dir = (
-                Path(os.environ.get("GIT_REPO_BASEPATH", "/git-repos")) / APPLICABILITY_DIR / jira_issue
-            )
-            if applicability_dir.exists():
-                shutil.rmtree(applicability_dir, ignore_errors=True)
             if cleanup["builddir"]:
                 shutil.rmtree(cleanup["builddir"], ignore_errors=True)
             if response is not None:

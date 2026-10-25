@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 from flexmock import flexmock
@@ -524,6 +525,7 @@ async def test_render_prompt_modular_rhel8_no_internal_fix():
 
     prompt = await render_prompt(
         input_data,
+        working_directory=Path("/git-repos/Triage/RHEL-999/run-test"),
         fix_version="rhel-8.10.z",
         cve_eligibility_result=_cve_eligibility(needs_internal_fix=True),
         jira_summary=summary,
@@ -549,6 +551,7 @@ async def test_render_prompt_modular_rhel9_has_internal_fix():
 
     prompt = await render_prompt(
         input_data,
+        working_directory=Path("/git-repos/Triage/RHEL-999/run-test"),
         fix_version="rhel-9.8.z",
         cve_eligibility_result=_cve_eligibility(needs_internal_fix=True),
         jira_summary=summary,

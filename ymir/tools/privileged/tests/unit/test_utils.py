@@ -100,9 +100,10 @@ async def test_clean_stale_repositories_cleans_container_children(mock_git_repo_
 
 
 @pytest.mark.asyncio
-async def test_clean_stale_repositories_cleans_execution_workspaces(mock_git_repo_basepath):
-    old_workspace = mock_git_repo_basepath / "Backport" / "RHEL-12345" / "old"
-    current_workspace = mock_git_repo_basepath / "Backport" / "RHEL-12345" / "current"
+@pytest.mark.parametrize("agent_type", ["Backport", "Triage"])
+async def test_clean_stale_repositories_cleans_execution_workspaces(mock_git_repo_basepath, agent_type):
+    old_workspace = mock_git_repo_basepath / agent_type / "RHEL-12345" / "old"
+    current_workspace = mock_git_repo_basepath / agent_type / "RHEL-12345" / "current"
     old_workspace.mkdir(parents=True)
     current_workspace.mkdir()
     old_time = datetime.now() - timedelta(days=15)
@@ -130,8 +131,9 @@ async def test_clean_stale_repositories_removes_empty_execution_issue_directory(
 
 
 @pytest.mark.asyncio
-async def test_clean_stale_repositories_preserves_active_workspace(mock_git_repo_basepath):
-    workspace = mock_git_repo_basepath / "Backport" / "RHEL-12345" / "active"
+@pytest.mark.parametrize("agent_type", ["Backport", "Triage"])
+async def test_clean_stale_repositories_preserves_active_workspace(mock_git_repo_basepath, agent_type):
+    workspace = mock_git_repo_basepath / agent_type / "RHEL-12345" / "active"
     workspace.mkdir(parents=True)
     old_time = datetime.now() - timedelta(days=15)
     os.utime(workspace, (old_time.timestamp(), old_time.timestamp()))
