@@ -1170,8 +1170,8 @@ async def resolve_canonical_mr_title(
 
     The Redis key is stable for the package/family. A matching summary digest
     reuses the record; only a newer ``summary_updated`` value from its source
-    Jira issue compare-and-swaps a replacement. CVE families use the Jira
-    summary with its stream-specific suffix removed; non-CVE families require
+    Jira issue compare-and-swaps a replacement. CVE tracker groups use the Jira
+    summary with its stream-specific suffix removed; non-CVE tracker groups require
     a validated generated title.
     """
     jira_summary = _validate_canonical_title(jira_summary, jira_issue)

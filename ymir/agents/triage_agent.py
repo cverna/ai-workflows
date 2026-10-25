@@ -659,7 +659,13 @@ async def run_workflow(
     auto_chain=False,
     force_cve_triage=False,
     user_triggered=False,
+    precomputed_triage: OutputSchema | None = None,
 ):
+    if precomputed_triage is not None:
+        if precomputed_triage.data.jira_issue != jira_issue:
+            raise ValueError("Precomputed triage belongs to another Jira issue")
+        if precomputed_triage.resolution == Resolution.NOT_AFFECTED:
+            raise ValueError("CVE applicability must be determined independently for each issue")
     local_tool_options = None
     if mock_env := get_mock_local_tool_env(jira_issue):
         local_tool_options = {"env": mock_env}
@@ -856,18 +862,21 @@ async def run_workflow(
             # Modular issues store "module:stream/package" (e.g. "postgresql:16/postgis");
             # extract the package so is_modular() / parse_module_stream() match the summary.
             state.downstream_component = extract_downstream_package(raw_component)
-            response = await triage_agent.run(
-                await render_prompt(
-                    input_data,
-                    fix_version=fix_version_name,
-                    cve_eligibility_result=state.cve_eligibility_result,
-                    jira_summary=state.jira_summary,
-                    downstream_component=state.downstream_component,
-                ),
-                expected_output=render_template("triage/output_format.j2"),
-                **get_agent_execution_config(),
-            )
-            state.triage_result = OutputSchema.model_validate_json(response.last_message.text)
+            if precomputed_triage is None:
+                response = await triage_agent.run(
+                    await render_prompt(
+                        input_data,
+                        fix_version=fix_version_name,
+                        cve_eligibility_result=state.cve_eligibility_result,
+                        jira_summary=state.jira_summary,
+                        downstream_component=state.downstream_component,
+                    ),
+                    expected_output=render_template("triage/output_format.j2"),
+                    **get_agent_execution_config(),
+                )
+                state.triage_result = OutputSchema.model_validate_json(response.last_message.text)
+            else:
+                state.triage_result = precomputed_triage.model_copy(deep=True)
 
             # postponed_y_stream is owned by the eligibility system (PENDING_DEPENDENCIES
             # verdict). The LLM analysis node is only reached when eligibility returned

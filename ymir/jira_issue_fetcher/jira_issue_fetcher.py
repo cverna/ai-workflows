@@ -398,7 +398,7 @@ class JiraIssueFetcher:
                 return label
         return None
 
-    async def search_issues(self) -> list[dict[str, Any]]:
+    async def search_issues(self, fields: list[str] | None = None) -> list[dict[str, Any]]:
         """
         Search for issues using the configured query with cursor-based pagination.
         The /rest/api/3/search/jql endpoint uses nextPageToken instead of startAt.
@@ -408,14 +408,18 @@ class JiraIssueFetcher:
         all_issues = []
         next_page_token = None
 
-        fields = [
-            "key",  # Issue key (e.g., RHEL-12345)
-            "labels",  # Issue labels
-            "components",  # Issue components
-            "customfield_10669",  # Downstream Component Name
-            "fixVersions",  # Fix Version/s (e.g., rhel-9.8)
-            "updated",  # Last-modified timestamp — used for stale in-flight-label detection
-        ]
+        fields = (
+            fields
+            if fields is not None
+            else [
+                "key",  # Issue key (e.g., RHEL-12345)
+                "labels",  # Issue labels
+                "components",  # Issue components
+                "customfield_10669",  # Downstream Component Name
+                "fixVersions",  # Fix Version/s (e.g., rhel-9.8)
+                "updated",  # Last-modified timestamp — used for stale in-flight-label detection
+            ]
+        )
 
         while True:
             await self._rate_limit()

@@ -626,7 +626,7 @@ def test_generated_title_allows_version_wording(title):
     assert _validate_generated_title(title, "RHEL-100") == title
 
 
-def test_short_cve_like_text_uses_non_cve_family_key():
+def test_short_cve_like_text_uses_non_cve_group_key():
     key = _canonical_mr_title_key(
         package="curl",
         jira_summary="CVE-2024-1 curl: Fix retry handling",
@@ -642,7 +642,7 @@ def test_short_cve_like_text_uses_non_cve_family_key():
     )
 
 
-def test_unicode_digit_cve_text_uses_non_cve_family_key():
+def test_unicode_digit_cve_text_uses_non_cve_group_key():
     key = _canonical_mr_title_key(
         package="curl",
         jira_summary="CVE-٢٠٢٦-١٢٣٤ curl: Fix retry handling",
@@ -658,7 +658,7 @@ def test_unicode_digit_cve_text_uses_non_cve_family_key():
     )
 
 
-def test_embedded_cve_like_text_uses_non_cve_family_key():
+def test_embedded_cve_like_text_uses_non_cve_group_key():
     key = _canonical_mr_title_key(
         package="curl",
         jira_summary="notCVE-2026-1234 curl: Fix retry handling",

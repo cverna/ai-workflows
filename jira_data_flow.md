@@ -53,6 +53,7 @@ graph TD
 
 These are AI-powered agents that use the MCP Server tools to interact with Jira:
 - **Triage Agent** - Analyzes issues, determines resolution type (rebase/backport/clarification/open-ended-analysis)
+- **MultiStreamTriageAgent** - Shares CVE/package investigation across RHEL trackers, then invokes the existing per-issue checks with the worker's `DRY_RUN` setting
 - **Rebase Agent** - Updates packages to new upstream versions
 - **Backport Agent** - Applies specific patches to packages
 
@@ -66,6 +67,7 @@ or its `MOCK_JIRA` implementation and `flexmock` dependency.
 
 Traditional Python services that make direct HTTP calls to Jira:
 - **Jira Issue Fetcher** - Two CronJobs querying Jira on a schedule and pushing matches to the Redis triage queue: a main sweep against a saved Jira filter (query maintained in the separate [`cve-scope`](https://gitlab.cee.redhat.com/jotnar-project/cve-scope) repo) and a `ymir_todo`-label sweep. Uses `requests` library for direct API calls.
+- **Multi-stream fetcher** - A separate one-shot entry point, `ymir.jira_issue_fetcher.multistream_triage_fetcher`, selects trackers with `MULTISTREAM_TRIAGE_QUERY` and groups them before enqueueing. It has no scheduled deployment and accepts live or dry-run configuration.
 - **Supervisor** - Workflow orchestration service that monitors issues/errata, advances them through testing/release process. Makes direct API calls using `requests` library via functions like `jira_api_get()`, `jira_api_post()`, `jira_api_put()`.
 
 *These services do NOT use the MCP Server - they call Jira API directly.*
@@ -98,6 +100,85 @@ sequenceDiagram
 - Rate limiting: 5 calls/second
 - Exponential backoff on failures
 - Deduplication across all Redis queues
+
+### Multi-stream CVE intake
+
+The multi-stream path groups Jira trackers by **one CVE ID and downstream
+package**, across fix versions. It leaves the normal fetcher's routing and
+manual triggers unchanged. See [README-agents.md](README-agents.md#multi-stream-triage-runs)
+for commands.
+
+1. The fetcher reads all pages matching `MULTISTREAM_TRIAGE_QUERY`, requesting summary,
+   downstream component and fix versions, then groups the matches. It includes
+   singleton groups and does not discover siblings outside the query.
+2. It logs and skips non-CVEs, multi-CVE trackers, invalid or modular components,
+   and trackers without exactly one named fix version. It does not send skipped
+   trackers to the normal queue.
+3. On `--enqueue`, it writes `MultiStreamTriageTask` JSON to
+   `multistream_triage_queue`. Preview mode prints tasks without opening a
+   Redis connection. The shared schema in `ymir/common/multistream_triage.py` does not
+   import the agent runtime, so the existing fetcher image can run this module.
+4. The worker moves one task to `multistream_triage_processing`, loads Jira
+   details and eligibility through MCP, and computes `is_older_zstream` using the
+   same current-stream classification as individual triage. Only trackers with
+   `eligibility=immediately` participate in shared discovery; per-issue code
+   handles the other trackers' eligibility outcomes.
+5. `MultiStreamTriageAgent` returns a separate preliminary recommendation for each
+   eligible tracker. The worker validates coverage and rechecks Jira inputs before
+   calling the existing per-issue workflow. Changed summary, description,
+   comments, component or fix version rejects that tracker's handoff. A tracker
+   failure does not prevent processing the remaining trackers. Shared-analysis
+   failures are recorded without falling back to individual discovery.
+6. The worker records analysis, per-issue outcomes and errors in
+   `multistream_triage_results` and removes the processing entry in one Redis
+   transaction. An interrupted run can leave a processing entry for inspection;
+   automatic recovery is not implemented.
+
+The fetcher uses WATCH/MULTI across these three lists to prevent duplicate
+enqueueing by concurrent fetchers. A queued or processing task blocks another
+task for that CVE/package. Recorded attempts, including failures, suppress their
+tracker keys; a later query can enqueue new siblings after the active task
+finishes. Retain results for deduplication. Retry/invalidation policy and a
+replacement for scanning the growing results list remain prerequisites for
+production use. Invalid stored task data stops enqueueing rather than bypassing
+deduplication. The manual `enqueue` command does not perform these fetcher checks.
+
+#### Package selection with JQL
+
+For a package-based rollout, use complementary queries: wrap the whole original
+selection in parentheses, then add `AND component in (curl, openssl)` for the
+multi-stream selection and `AND component not in (curl, openssl)` for the normal
+selection. Preserve the existing ownership, status and embargo restrictions,
+including parentheses around any `ymir_todo` alternatives. Handle empty component
+values explicitly if they belong in the normal selection.
+
+The multi-stream worker accepts live runs (`DRY_RUN=false`, the default) and
+dry runs (`DRY_RUN=true`). Shared discovery stays read-only; per-issue Jira writes
+follow the existing workflow and gateway controls. The worker still records
+results without running the normal queue worker's terminal-label lifecycle,
+downstream dispatch or reproducer enqueueing.
+
+The current multi-stream fetcher is not a production intake replacement.
+It does not inspect normal queues or implement employee-author
+checks for `ymir_todo`, priority, issue locks, stale-label recovery or queue-depth
+throttling. Before switching a package's live routing, define how to handle
+unsupported trackers and manual/API triggers, and drain its existing queued and
+in-flight work. JQL exclusion alone does not prevent those other entry points
+from processing the same tracker.
+
+#### Traces and comparison
+
+The agent spans use `MultiStreamTriageAgent` under a
+`MultiStreamTriageWorkflow` root span. Each tracker also
+has a `TriageWorkflow` span inside the grouped trace. Count that trace once when
+comparing groups with standalone individual traces, rather than counting its
+nested workflows as independent control runs.
+
+Compare outcome agreement and group-level totals for LLM calls, discovery and
+applicability calls, prompt tokens, clones, tool calls, errors and elapsed time.
+Report per-tracker cost separately. Match model and configuration for controlled
+comparisons; historical traces from another model provide a structural comparison
+only. Larger prompts and downstream checks can offset the saved discovery work.
 
 ### 2. MCP Server Tools → Jira (READ/WRITE)
 

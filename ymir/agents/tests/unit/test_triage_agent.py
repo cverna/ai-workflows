@@ -891,6 +891,8 @@ def test_build_reproducer_input_skips_postponed():
         (Resolution.REBUILD, True, False, Resolution.POSTPONED_DEPENDENCY, False),
     ],
 )
+@pytest.mark.parametrize("precomputed", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
 async def test_branch_creation_notice_uses_final_resolution(
     scenario,
     initial_resolution,
@@ -901,6 +903,8 @@ async def test_branch_creation_notice_uses_final_resolution(
     _mock_env_vars,
     monkeypatch,
     tmp_path,
+    precomputed,
+    dry_run,
 ):
     """Applicability and buildroot decisions can supersede the manual branch hold."""
     monkeypatch.setenv("GIT_REPO_BASEPATH", str(tmp_path))
@@ -954,9 +958,12 @@ async def test_branch_creation_notice_uses_final_resolution(
         return _return
 
     triage_agent = flexmock()
-    triage_agent.should_receive("run").replace_with(
-        _async_return(flexmock(last_message=flexmock(text=output.model_dump_json())))
-    )
+    if precomputed:
+        triage_agent.should_receive("run").never()
+    else:
+        triage_agent.should_receive("run").replace_with(
+            _async_return(flexmock(last_message=flexmock(text=output.model_dump_json())))
+        )
     applicability_agent = flexmock()
     applicability_agent.should_receive("run").replace_with(
         _async_return(flexmock(last_message=flexmock(text=applicability.model_dump_json())))
@@ -999,13 +1006,18 @@ async def test_branch_creation_notice_uses_final_resolution(
 
     state = await run_workflow(
         "RHEL-99999",
-        dry_run=False,
+        dry_run=dry_run,
         triage_agent_factory=lambda *_: triage_agent,
         auto_chain=scenario != "direct",
+        precomputed_triage=output if precomputed else None,
     )
 
     assert state.automatic_branch_creation_disabled is True
     assert state.triage_result.resolution == expected_resolution
+    if dry_run:
+        assert not labels
+        assert not comments
+        return
     if initial_resolution == Resolution.REBASE and scenario in ("sibling", "waiting"):
         assert not state.hold_for_manual_branch_creation
         assert not labels

@@ -24,11 +24,43 @@ so missing Python dependencies fail before the image is published.
 
 ## Architecture
 
-Three agents process tasks through Redis queues:
+The agents process tasks through Redis queues:
 - **Triage Agent**: Analyzes JIRA issues and determines resolution path. It uses title, description, fields, and comments to find out root cause of the issue. It can ask for clarification, create tasks for other agents or may take no action if not needed.
+- **MultiStreamTriageAgent**: Investigates one CVE ID and package across several RHEL trackers, then passes separate recommendations to the existing per-issue workflow. Supports live and dry-run modes.
 - **Rebase Agent**: Updates packages to newer upstream versions. A Rebase is only to be chosen when the issue explicitly instructs you to "rebase" or "update". It looks for upstream references that are linked, attached and present in the description or comments in the issue.
 - **Backport Agent**: Applies specific fixes/patches to packages. It looks for patches that are linked, attached and present in the description or comments in the issue. It tries to apply the patch and resolve any conflicts that may arise during the backport process.
 - **Issue Verification Agent**: Manages the post-fix lifecycle of a JIRA issue — from merged MR through errata creation, testing analysis, and status transitions to RELEASE_PENDING. Migrated from the supervisor's `IssueHandler`.
+
+### Multi-stream CVE triage
+
+Use `MultiStreamTriageAgent` to share upstream investigation across trackers for
+the same **CVE ID and RPM package**. A CVE affecting different packages requires
+separate tasks. One task can contain a single tracker.
+
+The worker validates each tracker's CVE, downstream component and fix version,
+then investigates eligible trackers in one agent invocation with shared upstream
+and Fedora checkouts. Each invocation can make multiple LLM calls. The worker
+passes each preliminary recommendation to `run_workflow(precomputed_triage=...)`,
+which skips repeated discovery but keeps per-issue eligibility, branch selection,
+source applicability, buildroot checks and resolution normalization. The shared
+agent cannot return `not-affected`; the per-issue source check owns that decision.
+
+Workflow code supplies `is_older_zstream` for each tracker using
+`current_z_streams`, matching individual triage. The agent must not infer that
+flag from `map_version`, which can return an upcoming Z-stream. Only a tracker
+below the actual current Z-stream requires an older-stream downstream fix source.
+
+Shared discovery remains read-only in both modes. The shared agent exposes
+read-oriented gateway tools, but its shell tool is not sandboxed; use a dedicated
+development stack for local testing. The multi-stream worker still calls the
+per-issue workflow with `auto_chain=False` and records its results without the
+normal queue worker's terminal-label lifecycle, downstream dispatch or reproducer
+enqueueing. Removing the dry-run requirement does not enable those queue-worker
+features.
+
+The entry point is `ymir.agents.multistream_triage_agent`; the task schema lives in
+`ymir/common/multistream_triage.py`. See [Jira Data Flow](jira_data_flow.md#multi-stream-cve-intake)
+for fetcher selection, queue handling and current limitations.
 
 ### Z-stream branch consistency
 
@@ -92,7 +124,7 @@ identifier makes that ProdSec-formatted summary the canonical title. For non-CVE
 issues, the summary is only context and an invalidation input: on a cache miss, a
 Title Agent generates a title from the implemented change. A stable Redis key
 scoped to the package and issue family atomically elects one generated title for
-all sibling workers. CVE families are identified by their normalized CVE set;
+all sibling workers. CVE tracker groups are identified by their normalized CVE set;
 non-CVE siblings are identified by the root issue of their Jira Cloners chain,
 falling back to the current issue key when that relationship cannot be resolved.
 For a normal backport from exactly one RHEL GitLab dist-git commit, the source
@@ -344,6 +376,30 @@ make JIRA_ISSUE=RHEL-12345 FORCE_CVE_TRIAGE=true run-triage-agent-standalone
 
 Use commas to delimit multiple patch/commit URLs in `UPSTREAM_PATCHES`.
 
+### Multi-stream triage runs
+
+With the Compose agent stack configured for dry runs, enqueue trackers for one
+CVE/package:
+
+```bash
+DRY_RUN=true JIRA_DRY_RUN=true podman compose --profile agents run --rm --no-deps \
+  -e DRY_RUN=true -e JIRA_DRY_RUN=true \
+  triage-agent python3 -m ymir.agents.multistream_triage_agent enqueue \
+  --cve CVE-2026-111497 --package nodejs22 RHEL-291411 RHEL-291409
+```
+
+Process one queued task:
+
+```bash
+DRY_RUN=true JIRA_DRY_RUN=true podman compose --profile agents run --rm --no-deps \
+  -e DRY_RUN=true -e JIRA_DRY_RUN=true \
+  triage-agent python3 -m ymir.agents.multistream_triage_agent run-once
+```
+
+These commands reuse the `triage-agent` service's image, source mounts and
+credentials. They do not start a persistent multi-stream worker. To select
+trackers from Jira instead of listing them, use the fetcher below.
+
 ### CLI
 
 The `ymir` CLI runs the triage workflow inside a container, orchestrated via
@@ -550,3 +606,28 @@ cp templates/jira-issue-fetcher.env .secrets/jira-issue-fetcher.env
 make build-jira-issue-fetcher
 make run-jira-issue-fetcher
 ```
+
+#### Multi-stream fetcher
+
+`ymir.jira_issue_fetcher.multistream_triage_fetcher` reuses the existing fetcher's Jira
+authentication, request retries and pagination. Set `MULTISTREAM_TRIAGE_QUERY` to select
+its trackers; the normal fetcher's `QUERY` does not control this path. The
+fetcher accepts the normal `DRY_RUN` setting and defaults to printing candidate
+tasks without connecting to Redis. `--enqueue` writes to Redis in either mode;
+the fetcher does not modify Jira.
+
+Build the fetcher image from the current checkout, then preview a selection:
+
+```bash
+podman compose --profile manual build jira-issue-fetcher
+podman compose --profile manual run --rm --no-deps \
+  -e DRY_RUN=true \
+  -e MULTISTREAM_TRIAGE_QUERY='project = RHEL AND key in (RHEL-291411, RHEL-291409)' \
+  jira-issue-fetcher python3 -m ymir.jira_issue_fetcher.multistream_triage_fetcher
+```
+
+This service uses the Jira credentials in `.secrets/jira-issue-fetcher.env`,
+unlike the agent service, which accesses Jira through the gateway. After reviewing
+the candidate tasks, append `--enqueue` to write them to the multi-stream queue.
+Run the worker with the command in [Multi-stream triage runs](#multi-stream-triage-runs).
+Neither command schedules a CronJob or changes production routing.
