@@ -26,9 +26,29 @@ def test_parse_dependency_comment_with_blocker():
 
     assert result is not None
     assert result.blocker_references == ["RHEL-67890"]
-    assert result.pending_issues == ["RHEL-67890"]
+    # A dependency postponement renders its single blocker once, so there is
+    # no separate pending-issue list to parse.
+    assert result.pending_issues == []
     assert "c9s buildroot" in result.summary
     assert result.comment_id == "100001"
+
+
+def test_parse_dependency_comment_with_display_text_blocker():
+    """A title pasted into the reference must not defeat the sweep."""
+    noisy = "RHEL-67890: CVE-2026-33818 golang: recursion\nRelease Pending"
+    comment = make_ymir_comment(
+        resolution="postponed_dependency",
+        summary="Rebuild of pkg waiting for golang to land in c9s buildroot",
+        pending_issues=[noisy],
+        blocker_reference=noisy,
+    )
+    issue = make_issue(comments=[comment])
+
+    result = parse_ymir_comment(issue)
+
+    assert result is not None
+    assert result.blocker_references == ["RHEL-67890"]
+    assert "Release Pending" not in comment.body
 
 
 def test_parse_y_stream_comment_multiple_pending():

@@ -1,3 +1,5 @@
+import pytest
+
 from ymir.common.models import (
     AUTOMATED_RESOLUTION_NOT_SUPPORTED,
     POSTPONEMENT_NOTE,
@@ -683,7 +685,7 @@ def test_reproducer_output_retryable_error():
 
 
 def test_postponed_dependency_with_blocker():
-    """Dependency postponement renders reason (resolution) and blocker."""
+    """A dependency postponement does not repeat its only blocker."""
     data = PostponedData(
         summary="Rebuild of butane waiting for golang to ship",
         pending_issues=["RHEL-67890"],
@@ -695,8 +697,84 @@ def test_postponed_dependency_with_blocker():
 
     assert "*Resolution*: postponed_dependency" in comment
     assert "*Blockers*: RHEL-67890" in comment
-    assert "*Waiting for*:" in comment
-    assert "* RHEL-67890" in comment
+    assert "*Waiting for*:" not in comment
+    assert comment.count("RHEL-67890") == 1
+
+
+def test_postponed_dependency_ignores_reference_order():
+    """Reordered references still collapse to a single blocker section."""
+    data = PostponedData(
+        summary="Rebuild of butane waiting for golang to ship",
+        pending_issues=["RHEL-1", "RHEL-2"],
+        jira_issue="RHEL-12345",
+        blocker_references=["RHEL-2", "RHEL-1"],
+    )
+    comment = TriageOutputSchema(resolution=Resolution.POSTPONED_DEPENDENCY, data=data).format_for_comment()
+
+    assert "*Waiting for at least one of*:" not in comment
+    assert "*Blockers*: RHEL-2,RHEL-1" in comment
+
+
+def test_postponed_y_stream_still_lists_every_pending_issue():
+    """Only dependency postponements collapse the duplicate blocker section."""
+    data = PostponedData(
+        summary="Y-stream CVE waiting for Z-stream clones",
+        pending_issues=["RHEL-111", "RHEL-222"],
+        jira_issue="RHEL-99999",
+        blocker_references=["RHEL-111", "RHEL-222"],
+    )
+    comment = TriageOutputSchema(resolution=Resolution.POSTPONED_Y_STREAM, data=data).format_for_comment()
+
+    assert "*Waiting for at least one of*:" in comment
+    assert "*Blockers*: RHEL-111,RHEL-222" in comment
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (["RHEL-285827"], ["RHEL-285827"]),
+        (["rhel-285827"], ["RHEL-285827"]),
+        (["RHEL-285827: CVE-2026-33818 golang: recursion"], ["RHEL-285827"]),
+        (["RHEL-285827: golang [rhel-9.9.z]"], ["RHEL-285827"]),
+        (["openssl-3.0.7-2.el9"], ["openssl-3.0.7-2.el9"]),
+        (["RHEL-285827: title\nRelease Pending"], ["RHEL-285827"]),
+        (["RHEL-1, RHEL-2"], ["RHEL-1", "RHEL-2"]),
+        (["RHEL-1", "RHEL-1: duplicate"], ["RHEL-1"]),
+        (
+            ["https://gitlab.com/group/pkg/-/merge_requests/42"],
+            ["https://gitlab.com/group/pkg/-/merge_requests/42"],
+        ),
+        (["not-a-reference"], ["not-a-reference"]),
+        ([], []),
+        (None, None),
+    ],
+)
+def test_postponed_references_are_canonicalised(raw, expected):
+    data = PostponedData(
+        summary="Rebuild waiting for golang",
+        pending_issues=raw if raw is not None else [],
+        jira_issue="RHEL-99999",
+        blocker_references=raw,
+    )
+    if raw is not None:
+        assert data.pending_issues == expected
+    assert data.blocker_references == expected
+
+
+def test_dependency_comment_remains_parseable_with_display_text():
+    """An LLM copying a dependency title into the reference still unblocks."""
+    data = PostponedData(
+        summary="Rebuild of butane waiting for golang to ship",
+        pending_issues=["RHEL-285827: CVE-2026-33818 golang: recursion\nRelease Pending"],
+        jira_issue="RHEL-12345",
+        blocker_references=["RHEL-285827: CVE-2026-33818 golang: recursion\nRelease Pending"],
+    )
+    comment = TriageOutputSchema(resolution=Resolution.POSTPONED_DEPENDENCY, data=data).format_for_comment()
+    blocker_line = next(line for line in comment.splitlines() if line.startswith("*Blockers*:"))
+
+    assert blocker_line == "*Blockers*: RHEL-285827"
+    assert "* RHEL-285827" not in comment
+    assert "Release Pending" not in comment
 
 
 def test_postponed_reason_y_stream():

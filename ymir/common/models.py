@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator
 
 from ymir.common.validators import UniqueSortedList
 
@@ -456,6 +456,32 @@ class OpenEndedAnalysisData(BaseModel):
     jira_issue: str = Field(description="Jira issue identifier")
 
 
+_REF_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+# Jira project keys look like RHEL-1234. Exclude CVE ids and version-like
+# tokens such as "rhel-9.9.z", whose "9" would otherwise look like a key.
+_REF_JIRA_KEY_RE = re.compile(r"\b(?!CVE\b)[A-Z][A-Z0-9]*-\d+\b(?!\.\d)")
+
+
+def canonicalize_references(values: list[str] | None) -> list[str] | None:
+    """Reduce free-text blocker references to Jira keys, preserving URLs.
+
+    The sweeps match a blocker reference against ``^[A-Z]+-\\d+$``. A model
+    that copies a dependency's display text ("RHEL-1: title\\nStatus") into
+    ``pending_issues`` or ``blocker_references`` would otherwise make the
+    comment unparseable and block automatic unblocking.
+    """
+    if values is None:
+        return None
+    references: list[str] = []
+    for value in values:
+        text = value.strip()
+        matches = [text] if _REF_URL_RE.match(text) else _REF_JIRA_KEY_RE.findall(text.upper())
+        for reference in matches or [text]:
+            if reference and reference not in references:
+                references.append(reference)
+    return references
+
+
 class PostponedData(BaseModel):
     """Data for postponed resolution (waiting on dependencies to ship)."""
 
@@ -482,6 +508,11 @@ class PostponedData(BaseModel):
         default=None,
         description="Dependency component name (for rebuild postponements)",
     )
+
+    @field_validator("pending_issues", "blocker_references")
+    @classmethod
+    def canonicalize_blockers(cls, value: list[str] | None) -> list[str] | None:
+        return canonicalize_references(value)
 
 
 class NotAffectedData(BaseModel):
@@ -701,22 +732,33 @@ class TriageOutputSchema(BaseModel):
                 )
 
             case PostponedData():
-                pending_text = "\n".join(f"* {key}" for key in self.data.pending_issues)
-                if len(self.data.pending_issues) == 1:
-                    heading = "*Waiting for*:"
-                else:
-                    heading = "*Waiting for at least one of*:"
-                blocker_line = (
-                    f"\n*Blockers*: {','.join(self.data.blocker_references)}"
-                    if self.data.blocker_references
-                    else ""
+                # A dependency postponement repeats its blocker as the only
+                # pending issue; rendering both sections shows the same key
+                # twice without adding information.
+                duplicate_pending = (
+                    self.resolution == Resolution.POSTPONED_DEPENDENCY
+                    and self.data.blocker_references is not None
+                    and set(self.data.pending_issues) == set(self.data.blocker_references)
                 )
+                pending_block = ""
+                if self.data.pending_issues and not duplicate_pending:
+                    heading = (
+                        "*Waiting for*:"
+                        if len(self.data.pending_issues) == 1
+                        else "*Waiting for at least one of*:"
+                    )
+                    pending_text = "\n".join(f"* {key}" for key in self.data.pending_issues)
+                    pending_block = f"{heading}\n{pending_text}\n"
+                blocker_line = ""
+                if self.data.blocker_references:
+                    prefix = "" if duplicate_pending else "\n"
+                    blocker_line = f"{prefix}*Blockers*: {','.join(self.data.blocker_references)}"
                 # Changes here must be reflected in the `ymir.sweep` regular expressions
                 # otherwise the postponed issue processing will break
                 return (
                     f"{resolution}"
                     f"*Summary*: {self.data.summary}\n"
-                    f"{heading}\n{pending_text}\n"
+                    f"{pending_block}"
                     f"{blocker_line}"
                     f"{POSTPONEMENT_NOTE}"
                     f"{TRIAGE_DISCLAIMER}"

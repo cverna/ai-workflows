@@ -416,6 +416,10 @@ You must decide between one of the following actions. Follow these guidelines to
      Set summary to explain that rebuild is waiting for the dependency to ship,
      and set pending_issues to the dependency issue key.
      Set blocker_references to a JSON array containing the dependency issue key, e.g. ["RHEL-67890"].
+     Name the dependency component, its NVR when known, and the target buildroot
+     in summary. Do not repeat the dependency issue key, its title, or its Jira
+     status there; the waiting and blocker fields already carry the key. Put only
+     the bare key in pending_issues and blocker_references, never a title or status.
      Also set package, fix_version, cve_id, dependency_issue, and dependency_component
      (same values as you would for a rebuild resolution).
    * **Fallback — no matching CVE tracker found**: If no dependency CVE tracker
