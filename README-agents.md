@@ -567,6 +567,180 @@ The stamp only updates Alembic's tracking metadata — any extra columns or inde
 added by the newer version's migrations remain in the database. PostgreSQL tolerates
 unused columns, so this is generally safe.
 
+## OpenCode server (experimental)
+
+The `opencode` compose profile runs an OpenCode V2 server as an alternative
+experiment harness, to compare how much of the agent scaffolding a general
+coding harness already provides.
+
+```bash
+make build-opencode
+make start-opencode DRY_RUN=true MOCK_JIRA=true
+```
+
+Attach a local client to the running server:
+
+```bash
+OPENCODE_PASSWORD=ymir-opencode opencode --server http://127.0.0.1:4096
+OPENCODE_PASSWORD=ymir-opencode opencode --server http://127.0.0.1:4096 mcp list
+```
+
+The container is built from `Containerfile.opencode` and includes the C10S RPM
+build toolchain (`rpmbuild`, `rpmspec`, `spectool`), Go/Rust, binutils, GDB,
+`jq`, Node.js/npm, Corepack and the Koji CLI. `centpkg`, internal `rhpkg`, and a
+`brew` profile are not installed by default; use the gateway for authenticated
+clone/source operations. Configuration and agent profiles live in
+`files/opencode/` and are installed to `/etc/opencode`:
+
+- `opencode.jsonc` connects only the `ymir-privileged` gateway over Streamable
+  HTTP. Credentials stay in the `mcp-gateway` pod and never reach the agent
+  container.
+- `AGENTS.md` documents the shell equivalents for the packaging helpers the
+  BeeAI agents get from `ymir.tools.unprivileged`, plus the rules agents must
+  follow (fork branch only, never force-push, never merge their own MR).
+- `agents/` holds least-privilege profiles: `triage`, `backport`, and the
+  `cve-applicability`, `inherit-adaptation` and `build-failure-analyst`
+  subagents. `inherit-adaptation` can edit only `*.spec` files, which enforces in
+  the harness what the BeeAI path enforces with a restricted tool list.
+- `rebuild` is initially prepare-only: it inspects dependency trackers and
+  existing work, then prepares Release/changelog bookkeeping in a fresh local
+  checkout when appropriate. It neither publishes nor submits builds, and does
+  not require a new readiness tool. Unknown dependency readiness is reported
+  explicitly; a local diff is not proof of a successful rebuilt package.
+
+Every agent in this profile uses OpenCode's native `read`, `edit`, `write`,
+`glob`, `grep` and `shell` tools. Only `ymir-privileged_*` tools are exposed over
+MCP.
+
+Session history and extracted working files persist in the `opencode-data` and
+`opencode-work` named volumes (`/home/beeai/.local/share/opencode` and
+`/home/beeai/work`). Recreating the service retains them; `down --volumes` removes
+them. Before first recreating an older container without these mounts, migrate
+its data while the server is stopped so the SQLite database is consistent.
+
+### Redis queue bridge
+
+OpenCode is a server, not a queue worker, so the `opencode-worker` service in the
+`opencode` profile supplies that half. It consumes the same
+`triage_queue_todo`/`triage_queue` lists and `Task` payloads the BeeAI triage
+agent uses, then drives the server over its HTTP API. The fetcher and
+`make trigger-pipeline` therefore work unchanged:
+
+```bash
+make start-opencode DRY_RUN=true
+make trigger-pipeline JIRA_ISSUE=RHEL-12345
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENCODE_URL` | `http://opencode-agent:4096` | Server the worker drives |
+| `OPENCODE_WORKER_AGENTS` | `triage,rebuild` | Agent profiles this worker serves |
+| `CONTAINER_VERSION` | `c10s` | Selects the `c9s` or `c10s` stage queues |
+| `OPENCODE_DIRECTORY` | `/home/beeai/work` | Server-side working directory |
+| `OPENCODE_TASK_TIMEOUT` | `1800` | Seconds before a session is abandoned |
+| `OPENCODE_WORKER_CONCURRENCY` | `1` | Tasks in flight per agent |
+| `OPENCODE_RESUME_SESSIONS` | `false` | Reuse a session across stages |
+| `OPENCODE_SESSION_TTL` | `86400` | Seconds a resumable session id is kept |
+| `OPENCODE_RESULT_DIR` | `/home/beeai/work/opencode-worker-results` | Where verdicts are written |
+| `DRY_RUN` | `false` | Must be `true` to start, unless explicitly waived |
+| `OPENCODE_REQUIRE_DRY_RUN` | `true` | Fail closed when `DRY_RUN` is not `true` |
+
+One container serves every stage. Each enabled agent gets its own task loop over
+its priority twin and normal queue, so retry, locking and permissions stay
+per-stage while the deployment is a single container. `CONTAINER_VERSION`
+filters the stream-specific queues, because the c9s and c10s images carry
+different toolchains.
+
+With `OPENCODE_RESUME_SESSIONS=true` the worker stores one session id **per issue
+and per stage** (`opencode:session:<issue>:<agent>`, TTL-bounded), so a retry of
+the same stage resumes it while a different stage starts fresh.
+
+Cross-stage resumption was tested and rejected: a rebuild stage resuming triage's
+session answered in 26 seconds by endorsing triage's conclusion, without checking
+dependency or readiness evidence of its own. Sharing context across a decision
+boundary makes the next stage inherit the decision. A session that produces no
+usable result is deleted so a retry starts clean.
+
+Completion is detected from `time.idle` advancing, not from `outcome`: a finished
+session keeps reporting its previous outcome until the next run completes, so an
+outcome-only wait returns the previous answer.
+
+Queue work is unattended, so the worker refuses to start unless `DRY_RUN=true`.
+That value is the same one compose gives `mcp-gateway` and `opencode-agent`, so
+the guard, the gateway floor and the worker assertion agree. Deliberate live
+operation requires `OPENCODE_REQUIRE_DRY_RUN=false`; there is no default path
+from a queue to real Jira comments or merge requests.
+
+Queue handling mirrors the BeeAI agents: the priority twin is polled first, each
+issue takes `issue_lock` so a duplicate task is dropped rather than run twice,
+transport failures requeue with an incremented `attempts`, and exhausted or
+malformed tasks land on `error_list`.
+
+**Result contract.** A queue cannot act on prose, so the worker appends an
+instruction to every prompt requiring one fenced JSON block, and rejects the run
+without it:
+
+```json
+{"resolution": "backport", "package": "bash", "target_branch": "rhel-9.8.0",
+ "confidence": "medium", "summary": "...", "justification_category": null,
+ "evidence": "...", "proposed_comment": null, "proposed_labels": []}
+```
+
+The worker writes that verdict to `OPENCODE_RESULT_DIR`; it never writes to
+Jira. Publishing a verdict is deliberately left to a later step so a dry run
+cannot mutate the tracker through the queue.
+
+### Triage tools and scratch space
+
+`/tmp/opencode` is sticky/world-writable (1777). Use `mktemp -d` below it for
+private extraction directories; it supports both `beeai` and arbitrary OpenShift
+UIDs without making their individual directories world-writable.
+
+Corepack is pinned by the image's `COREPACK_VERSION` build argument. It provides
+Yarn shims, not one globally selected Yarn version. Inspect each project's
+`packageManager` and `yarnPath` before invoking Yarn. Automatic package.json
+pinning and latest-version updates are disabled. The first use of a pinned
+manager may need a network download/cache; a missing cache is not evidence of
+a missing dependency. Avoid package installation and lifecycle scripts during
+read-only inspection unless explicitly needed and trusted.
+
+Read-only Koji queries can use `koji --server <hub-url> --noauth`. This does not
+configure Brew authentication, artifact access or a new provenance MCP tool.
+The container's toolchain versions are not proof of a released package's build
+environment; use matching environments for runtime reproduction claims.
+
+Run the offline smoke test after building, including arbitrary-UID coverage:
+
+```bash
+make test-opencode-tools
+```
+
+It verifies required executables, Node/JSON processing, Python RPM/Koji imports,
+Corepack safeguards and actual source-archive extraction into scratch space.
+It makes no model calls, contacts no build systems and runs no project scripts.
+
+### DRY_RUN in the OpenCode profile
+
+Dry run is enforced in two independent layers, because the OpenCode agent has no
+deterministic workflow wrapper to skip publishing steps the way the BeeAI agents
+do:
+
+1. **Gateway floor.** `mcp-gateway` refuses every mutating Jira, errata,
+   lookaside and GitLab write on its own and returns
+   `Dry run, not <action> (this is expected, not an error)`. This holds for any
+   client and cannot be bypassed by prompt injection.
+2. **Harness guard.** The `ymir-dry-run` plugin in `files/opencode/plugins/`
+   re-states the dry-run contract on every model call, blocks the same
+   mutating MCP tools, and refuses local `git push`, `centpkg push`/`commit`
+   and `rhpkg push`/`commit`.
+
+Local work is intentionally unaffected: editing, `git commit`, `%prep`, SRPM
+creation and Copr builds still run, because a dry run must still prove the
+change builds.
+
+> **Note:** `mcp-gateway` serves both transports on port 8000 — SSE at `/sse`
+> for the BeeAI agents and Streamable HTTP at `/mcp` for OpenCode.
+
 ## Advanced Usage
 
 ### Automatic Issue Fetching

@@ -158,3 +158,25 @@ Sorted by (impact desc, likelihood desc).
 | Treat all Jira-issue- and MR-comment-derived text as untrusted at the prompt level; add a confirmation/second-check step before high-impact privileged actions (push, Jira status change) whose triggering content originated from unverified external sources | T2 | partial | L |
 | Sandbox spec-file macro/shell expansion (restrict or strip `%(...)` shell macros, run `specfile`/`rpmbuild` parsing in a locked-down subprocess with no credential/network access) before processing untrusted patches, upstream tarballs, or dist-git history; see [PACKIT-4796](https://redhat.atlassian.net/browse/PACKIT-4796) | T10, T3 | partial | M |
 | Make sure we are logging the content of SKIP_GATEWAY_CHECK environment variable | T2 | partial | S |
+
+## 9. Experimental OpenCode dependency inspection
+
+The experimental `opencode` container includes Node.js/npm and a pinned Corepack
+installation. A project's `packageManager` or `yarnPath` can select executable
+package-manager code; Corepack may download the pinned manager from external
+registries on first use. This adds an untrusted repository/registry-to-process
+boundary, even when the intended command is read-only dependency inspection.
+
+Corepack itself is installed with lifecycle scripts disabled and Node engine
+compatibility enforced. Automatic project pinning and latest-version updates
+are disabled. These settings do not sandbox a project-selected manager or
+dependency scripts. Inspect manager declarations/local binaries before running
+them; avoid dependency installation and lifecycle scripts during triage unless
+explicitly needed and trusted. Preserve gateway isolation of packaging secrets
+and network restrictions; process execution can still access anything mounted
+in the agent container, including model credentials. Installing Koji/GDB does
+not add Brew credentials or establish shipped-build provenance.
+
+Scratch `/tmp/opencode` is sticky/world-writable; each task should create a
+private `mktemp` directory beneath it. The sticky bit is not isolation between
+tasks running as the same UID.

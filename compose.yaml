@@ -138,7 +138,7 @@ services:
       - .secrets/rhel-config.json:/home/mcp/rhel-config.json:ro,z,U
     command: ["python", "-m", "ymir.tools.privileged.gateway"]
     restart: unless-stopped
-    profiles: ["agents", "supervisor", "e2e-test"]
+    profiles: ["agents", "supervisor", "e2e-test", "opencode"]
 
   mcp-gateway-cli:
     <<: *mcp-gateway
@@ -159,7 +159,7 @@ services:
     volumes:
       - valkey-data:/data
     restart: unless-stopped
-    profiles: ["agents", "supervisor", "e2e-test"]
+    profiles: ["agents", "supervisor", "e2e-test", "opencode"]
 
   phoenix-db:
     image: quay.io/sclorg/postgresql-16-c9s
@@ -516,6 +516,79 @@ services:
     restart: unless-stopped
     profiles: ["agents"]
 
+  opencode-agent:
+    image: opencode-agent:c10s
+    build:
+      context: .
+      dockerfile: Containerfile.opencode
+      args:
+        INTERNAL_REPO_URL: ${INTERNAL_REPO_URL_C10S:-}
+        EXTRA_PACKAGES: ${INTERNAL_PACKAGES_C10S:-}
+        OPENCODE_VERSION: ${OPENCODE_VERSION:-}
+    depends_on:
+      - mcp-gateway
+    environment:
+      <<: *beeai-env
+      CONTAINER_VERSION: c10s
+      MCP_GATEWAY_HTTP_URL: http://mcp-gateway:8000/mcp
+      OPENCODE_PASSWORD: ${OPENCODE_PASSWORD:-ymir-opencode}
+      GOOGLE_APPLICATION_CREDENTIALS: /home/beeai/jotnar-vertex-dev.json
+      # SAFETY: the privileged gateway is the only component allowed to hold
+      # packaging credentials. Clear the token inherited from x-beeai-env so it
+      # cannot leak into an agent shell.
+      GITLAB_TOKEN: ""
+    env_file:
+      - .secrets/beeai-agent.env
+    volumes:
+      - ./ymir:/home/beeai/ymir:ro,z
+      - ./files/opencode:/etc/opencode:ro,z
+      - opencode-data:/home/beeai/.local/share/opencode:rw,U
+      - opencode-work:/home/beeai/work:rw,U
+      - git-repos:/git-repos:rw,U
+      - .secrets/rhel-config.json:/home/beeai/rhel-config.json:ro,z,U
+      - .secrets/jotnar-vertex-dev.json:/home/beeai/jotnar-vertex-dev.json:ro,z,U
+      - ./scripts:/home/beeai/scripts:ro,z
+    ports:
+      - "127.0.0.1:${OPENCODE_PORT:-4096}:4096"
+    command: ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"]
+    restart: unless-stopped
+    profiles: ["opencode"]
+
+  # Redis bridge: OpenCode is a server, not a queue worker. This consumes the
+  # same triage queues the BeeAI agents use and drives the server over HTTP, so
+  # the fetcher and `make trigger-pipeline` keep working unchanged.
+  opencode-worker:
+    image: opencode-agent:c10s
+    depends_on:
+      - valkey
+      - opencode-agent
+    environment:
+      REDIS_URL: redis://valkey:6379/0
+      OPENCODE_URL: http://opencode-agent:4096
+      OPENCODE_PASSWORD: ${OPENCODE_PASSWORD:-ymir-opencode}
+      OPENCODE_DIRECTORY: /home/beeai/work
+      # One worker serves every stage: each queue is owned by one agent profile.
+      OPENCODE_WORKER_AGENTS: ${OPENCODE_WORKER_AGENTS:-triage,rebuild}
+      CONTAINER_VERSION: ${CONTAINER_VERSION:-c10s}
+      # Resume the same session across stages so later work reuses earlier context.
+      OPENCODE_RESUME_SESSIONS: ${OPENCODE_RESUME_SESSIONS:-false}
+      OPENCODE_SESSION_TTL: ${OPENCODE_SESSION_TTL:-86400}
+      OPENCODE_RESULT_DIR: /home/beeai/work/opencode-worker-results
+      OPENCODE_TASK_TIMEOUT: ${OPENCODE_TASK_TIMEOUT:-1800}
+      MAX_CONCURRENT_TASKS: ${OPENCODE_WORKER_CONCURRENCY:-1}
+      # Same value the gateway and agent receive; the worker refuses to start
+      # unless this is true, so unattended queue work cannot run live by accident.
+      DRY_RUN: ${DRY_RUN:-false}
+      OPENCODE_REQUIRE_DRY_RUN: ${OPENCODE_REQUIRE_DRY_RUN:-true}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./ymir:/home/beeai/ymir:ro,z
+      - ./files/opencode:/etc/opencode:ro,z
+      - opencode-work:/home/beeai/work:rw,U
+    command: ["python3", "-m", "ymir.opencode_worker.main"]
+    restart: unless-stopped
+    profiles: ["opencode"]
+
 
 volumes:
   valkey-data:
@@ -523,3 +596,5 @@ volumes:
   phoenix-db-data:
   trace-server-data:
   git-repos:
+  opencode-data:
+  opencode-work:

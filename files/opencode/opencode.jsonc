@@ -1,0 +1,46 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "update": "disable",
+  // Default model for every agent that does not override it. Override per
+  // session with `-m`, or per agent with a `model:` field.
+  "model": "openai/gpt-6.1-sol",
+  // Automatic compaction keeps long backport/debug sessions inside the model
+  // window without relying on the model remembering to compact itself.
+  "compaction": {
+    "auto": true,
+    "keep": {
+      "tokens": 15000
+    },
+    "buffer": "15%"
+  },
+  "mcp": {
+    "timeout": {
+      "startup": 60000,
+      "catalog": 60000,
+      "execution": 3600000
+    },
+    "servers": {
+      // The privileged gateway is the only MCP server. It runs in its own pod
+      // and alone mounts the GitLab PAT, Jira token, and Kerberos keytabs, so
+      // agent containers hold no credentials. Everything filesystem/shell
+      // related is handled by OpenCode's native tools instead.
+      "ymir-privileged": {
+        "type": "remote",
+        "url": "{env:MCP_GATEWAY_HTTP_URL}",
+        "oauth": false,
+        "codemode": false
+      }
+    }
+  },
+  // Harness-side half of DRY_RUN. The gateway is the hard floor; this blocks
+  // the same calls one layer earlier and tells the model it is in dry run.
+  "plugins": ["/etc/opencode/plugins/ymir-dry-run"],
+  "permissions": [
+    // Package sources and dist-git clones live on a shared volume outside the
+    // session worktree, so external access must not prompt.
+    { "action": "external_directory", "resource": "*", "effect": "allow" },
+    // Never let an agent merge its own work: pushes and MR creation stay
+    // available, merging does not.
+    { "action": "shell", "resource": "git push --force*", "effect": "deny" }
+  ]
+}

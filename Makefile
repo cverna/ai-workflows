@@ -14,9 +14,11 @@ BACKPORT_E2E_EXCLUDE_ISSUES ?=
 COMPOSE ?= $(shell if podman compose ls >/dev/null 2>&1; then echo "podman compose"; elif command -v podman-compose >/dev/null 2>&1; then echo "podman-compose"; else echo "docker-compose"; fi)
 COMPOSE_AGENTS=$(COMPOSE) -f $(COMPOSE_FILE) --profile=agents
 COMPOSE_SUPERVISOR=$(COMPOSE) -f $(COMPOSE_FILE) --profile=supervisor
+COMPOSE_OPENCODE=$(COMPOSE) -f $(COMPOSE_FILE) --profile=opencode
 
 # Extract container tool (podman or docker) from COMPOSE
 CONTAINER_TOOL ?= $(shell command -v podman >/dev/null 2>&1 && echo "podman" || echo "docker")
+OPENCODE_TEST_IMAGE ?= beeai-tests
 REGISTRY ?= quay.io/jotnar
 
 .PHONY: deploy changelog
@@ -499,6 +501,40 @@ run-preliminary-testing-agent-standalone:
 		-e DRY_RUN=$(DRY_RUN) \
 		-e IGNORE_NEEDS_ATTENTION=$(IGNORE_NEEDS_ATTENTION) \
 		preliminary-testing-agent
+
+
+# OpenCode Server & Experimentation Targets
+
+.PHONY: build-opencode
+build-opencode:
+	$(COMPOSE_OPENCODE) build opencode-agent
+
+.PHONY: test-opencode-tools
+test-opencode-tools:
+	$(CONTAINER_TOOL) run --rm --network=none opencode-agent:c10s bash /usr/local/share/ymir/test_opencode_tools.sh
+	$(CONTAINER_TOOL) run --rm --network=none --user 12345:0 opencode-agent:c10s bash /usr/local/share/ymir/test_opencode_tools.sh
+
+.PHONY: test-opencode-worker
+test-opencode-worker:
+	$(CONTAINER_TOOL) run --rm -v $(CURDIR):/src:z $(OPENCODE_TEST_IMAGE) \
+		pytest ymir/opencode_worker/tests/unit -q
+
+.PHONY: start-opencode
+start-opencode:
+	DRY_RUN=$(DRY_RUN) MOCK_JIRA=$(MOCK_JIRA) JIRA_DRY_RUN=$(JIRA_DRY_RUN) $(COMPOSE_OPENCODE) up
+
+.PHONY: start-opencode-detached
+start-opencode-detached:
+	DRY_RUN=$(DRY_RUN) MOCK_JIRA=$(MOCK_JIRA) JIRA_DRY_RUN=$(JIRA_DRY_RUN) $(COMPOSE_OPENCODE) up -d
+
+.PHONY: stop-opencode
+stop-opencode:
+	$(COMPOSE_OPENCODE) stop
+	$(COMPOSE_OPENCODE) down
+
+.PHONY: run-opencode-bash
+run-opencode-bash:
+	$(COMPOSE_OPENCODE) run --rm opencode-agent /bin/bash
 
 
 # Common utility targets

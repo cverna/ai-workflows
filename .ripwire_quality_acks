@@ -1,0 +1,23 @@
+# ripwire quality acks v1 — written by --quality-ack; a finding stays suppressed until it worsens past its acked magnitude
+# format: ack <kind> <16-hex-key> <ackNow> [cid=<16-hex-content-id>] [by=<scope that acked it>] <reason to end of line> — one per line, kept SORTED by (kind,key) on every write (merge-friendly)
+ack dead-code:new-symbol 289b44d698273fe4 0 cid=f4a0db130eabeb01 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack dead-code:new-symbol 5778a95b28d34c89 0 cid=d3b722029c06ebf6 by=ymir/opencode_worker same async-closure test double pattern as _client_returning; unrelated test suite, not worth a shared helper.
+ack dead-code:new-symbol 5d8856221295d5a6 0 cid=4b7a3ca015a036a4 by=ymir/opencode_worker A two-line pytest.raises test necessarily shares the arrange/assert idiom with every other exception test in the tree; there is no meaningful abstraction to extract.
+ack dead-code:new-symbol c2d08da1733babf4 0 cid=b457ff4abfc0bbcd by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication 0399aa110a8fc7da 21 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication 19928797e5dc3ac6 18 by=ymir/opencode_worker A two-line pytest.raises test necessarily shares the arrange/assert idiom with every other exception test in the tree; there is no meaningful abstraction to extract.
+ack duplication 1dfaa26a76e9dc57 21 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication 239f7fa98bf31456 21 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication 36b7b4174d81ff3f 21 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication 3e41ca58d3bcaec0 20 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication 3f40f34d479da8de 34 by=ymir/opencode_worker Async-closure test double shared with an unrelated API test helper; consolidating would couple independent suites. | prior: async-closure test double; 32 tokens shared with an unrelated API test helper. Consolidating would couple independent test suites.
+ack duplication 419b09518b1785aa 19 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication 4bdf04c1e1b23d85 22 by=ymir/opencode_worker A two-line pytest.raises test necessarily shares the arrange/assert idiom with every other exception test in the tree; there is no meaningful abstraction to extract.
+ack duplication 61cc0f273ec7cfee 31 by=ymir/opencode_worker same async-closure test double pattern as _client_returning; unrelated test suite, not worth a shared helper.
+ack duplication 71eee43a74f1555f 19 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication 91d26843361eed97 19 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication 9c0a72fbcabf851e 18 by=ymir/opencode_worker A two-line pytest.raises test necessarily shares the arrange/assert idiom with every other exception test in the tree; there is no meaningful abstraction to extract.
+ack duplication bc66dd0b5805a9c5 34 by=ymir/opencode_worker Async-closure test double shared with an unrelated API test helper; consolidating would couple independent suites. | prior: async-closure test double; 32 tokens shared with an unrelated API test helper. Consolidating would couple independent test suites.
+ack duplication c37ac9746c2bb975 21 by=ymir/opencode_worker Same pytest.raises exception-test idiom flagged across the tree; two-line guard tests with no extractable abstraction.
+ack duplication c4f3b67b32c76dff 20 by=ymir/opencode_worker A two-line pytest.raises test necessarily shares the arrange/assert idiom with every other exception test in the tree; there is no meaningful abstraction to extract.
+ack duplication fbc051e3db7c9ab1 21 by=ymir/opencode_worker A two-line pytest.raises test necessarily shares the arrange/assert idiom with every other exception test in the tree; there is no meaningful abstraction to extract.

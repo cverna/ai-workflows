@@ -1,0 +1,206 @@
+FROM quay.io/centos/centos:stream10
+
+RUN dnf -y install epel-release \
+    && dnf config-manager --set-enabled crb \
+    && dnf -y update
+
+# Install RH IT Root CAs for access to internal services
+COPY files/Current-IT-Root-CAs.pem /etc/pki/ca-trust/source/anchors/
+RUN update-ca-trust
+
+# Prefer IPv4 over IPv6; cluster has no IPv6 egress routing.
+# Full table must be specified — a single precedence line discards all defaults.
+RUN printf "precedence ::1/128       50\nprecedence ::/0          40\nprecedence 2002::/16     30\nprecedence ::/96         20\nprecedence ::ffff:0:0/96 100\n" > /etc/gai.conf
+
+ARG INTERNAL_REPO_URL=""
+RUN if [ -n "$INTERNAL_REPO_URL" ]; then \
+      curl -fsSL -o /etc/yum.repos.d/internal.repo "$INTERNAL_REPO_URL"; \
+    fi
+
+ARG EXTRA_PACKAGES=""
+RUN dnf -y install --allowerasing \
+      curl \
+      gcc \
+      gcc-c++ \
+      git \
+      krb5-devel \
+      python3 \
+      python3-pip \
+      python3-devel \
+      python3-rpm \
+      python3-rpkg \
+      python3-koji \
+      rpm-build \
+      rpmdevtools \
+      rpmlint \
+      tmt \
+      autoconf \
+      automake \
+      gettext-devel \
+      libgcrypt-devel \
+      libtool \
+      libtool-ltdl \
+      libtool-ltdl-devel \
+      make \
+      meson \
+      ninja-build \
+      cmake \
+      wget \
+      findutils \
+      which \
+      sed \
+      gawk \
+      rsync \
+      python3-tabulate \
+      go-rpm-macros \
+      python-srpm-macros \
+      pyproject-srpm-macros \
+      rust-toolset-srpm-macros \
+      cargo-rpm-macros \
+      perl-srpm-macros \
+      perl-ExtUtils-MakeMaker \
+      javapackages-tools \
+      javapackages-local \
+      java-devel \
+      ant \
+      maven \
+      libbase \
+      libloader \
+      xmvn-tools \
+      xmlto \
+      ${EXTRA_PACKAGES} \
+    && dnf clean all
+
+COPY openinference-reasoning.patch /tmp
+COPY openinference-streaming.patch /tmp
+
+RUN pip3 install --no-cache-dir \
+      "litellm<1.106.0,!=1.82.7,!=1.82.8,!=1.92.0" \
+      beeai-framework[vertexai,mcp,duckduckgo]==0.1.85 \
+      google-cloud-aiplatform \
+      openinference-instrumentation-beeai==0.1.21 \
+      arize-phoenix-otel \
+      redis \
+      specfile \
+      pytest \
+      pytest-asyncio \
+      "GitPython>=3.1.0" \
+      unidiff \
+      "PyYAML>=5.1" \
+      "sentry-sdk>=2.13.0" \
+      typer \
+    && cd /usr/local/lib/python3.12/site-packages \
+    && patch -p5 -i /tmp/openinference-reasoning.patch \
+    && patch -p5 -i /tmp/openinference-streaming.patch
+
+# Verify no malicious litellm_init.pth was introduced by compromised litellm packages (e.g. 1.82.7, 1.82.8)
+RUN MALICIOUS=$(find /usr /opt -name "litellm_init.pth" 2>/dev/null); \
+    if [ -n "$MALICIOUS" ]; then \
+      echo "SECURITY ALERT: malicious litellm_init.pth detected: $MALICIOUS"; \
+      exit 1; \
+    fi
+
+# Create user
+RUN useradd -m -G wheel beeai
+
+# Reap orphaned subprocesses while the agent keeps running.
+RUN dnf -y install catatonit \
+    && dnf clean all \
+    && test -x /usr/libexec/catatonit/catatonit
+
+# Install ripgrep and Python dependencies retained for local Ymir tooling.
+# OpenCode does not start the unprivileged MCP gateway.
+RUN dnf -y install ripgrep libpq-devel \
+    && dnf clean all \
+    && pip3 install --no-cache-dir \
+      "nitrate>=1.9.0" \
+      "aiohttp>=3.12.15" \
+      "copr>=1.129" \
+      "ogr>=0.55.0" \
+      "requests-gssapi>=1.3.0" \
+      "logdetective-mcp>=0.6.1"
+
+# Source/dependency inspection and read-only build metadata investigation.
+# python3-koji supplies the library, but not the koji CLI.
+RUN dnf -y install jq nodejs nodejs-npm koji gdb \
+    && dnf clean all
+
+# Use the inspected project's packageManager/yarnPath instead of global Yarn.
+# Pin Corepack itself; fail rather than silently accepting an unsupported Node.
+ARG COREPACK_VERSION=0.36.0
+RUN npm install --global --ignore-scripts --engine-strict "corepack@${COREPACK_VERSION}" \
+    && corepack enable yarn
+ENV COREPACK_ENABLE_AUTO_PIN=0 \
+    COREPACK_DEFAULT_TO_LATEST=0 \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    NODE_EXTRA_CA_CERTS=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+
+# OpenCode can create this directory as root during installation. Leave it
+# sticky/world-writable so both beeai and arbitrary OpenShift UIDs can extract
+# source archives into their own private subdirectories.
+RUN install -d -m 1777 /tmp/opencode
+
+# Install OpenCode V2 CLI & Server binary
+ARG OPENCODE_VERSION=""
+RUN if [ -n "$OPENCODE_VERSION" ]; then \
+      curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path --version "$OPENCODE_VERSION"; \
+    else \
+      curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path; \
+    fi \
+    && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && chmod 0755 /usr/local/bin/opencode \
+    && rm -rf /root/.opencode \
+    && /usr/local/bin/opencode --version
+
+# Copy system-wide OpenCode configuration and Ymir agent profiles
+COPY files/opencode/ /etc/opencode/
+RUN chmod -R a+rX /etc/opencode
+
+# Copy required directories
+# Individual directories are mounted as volumes in development
+COPY ymir/agents/ /home/beeai/ymir/agents/
+COPY ymir/tools/ /home/beeai/ymir/tools/
+COPY ymir/common/ /home/beeai/ymir/common/
+COPY ymir/opencode_worker/ /home/beeai/ymir/opencode_worker/
+# Keep the package readable for arbitrary OpenShift UIDs; a restrictive umask on
+# the build context otherwise produces directories the container cannot import.
+RUN chmod -R a+rX /home/beeai/ymir
+RUN mkdir -p /home/beeai/.config/opencode /home/beeai/.local/share/opencode /home/beeai/.cache/opencode /home/beeai/.local/state/opencode \
+    && ln -sfn /etc/opencode/AGENTS.md /home/beeai/.config/opencode/AGENTS.md \
+    && chown -R beeai:root /home/beeai \
+    && chmod -R g+rwX /home/beeai
+
+# Set up GitLab SSH host keys
+COPY files/gitlab_host_keys /etc/ssh/ssh_known_hosts
+
+USER beeai
+ENV HOME=/home/beeai
+WORKDIR $HOME
+
+# Set PYTHONPATH so ymir namespace package can be imported
+ENV PYTHONPATH=$HOME:$PYTHONPATH
+ENV MCP_GATEWAY_URL=http://mcp-gateway:8000/sse
+ENV MCP_GATEWAY_HTTP_URL=http://mcp-gateway:8000/mcp
+
+# so that we can start working with gitlab.com immediately
+RUN git config --global user.email "redhat-ymir-agent@redhat.com" \
+    && git config --global user.name "RHEL Packaging Agent" \
+    && git config --global core.editor "true" \
+    && git config --global --add safe.directory '/git-repos/*' \
+    && git config --global --add safe.directory '/git-repos/applicability/*' \
+    && git config --global include.path /git-repos/.mock_gitconfig \
+    && git config --global http.lowSpeedLimit 1000 \
+    && git config --global http.lowSpeedTime 900 \
+    && printf "max-time = 60\nconnect-timeout = 30\n" > ~/.curlrc \
+    && mkdir -p ~/.ssh \
+    && chmod 0700 ~/.ssh \
+    && printf "Host *\n    ServerAliveInterval 60\n    ServerAliveCountMax 15\n" > ~/.ssh/config \
+    && chmod 0600 ~/.ssh/config
+
+COPY scripts/test_opencode_tools.sh /usr/local/share/ymir/test_opencode_tools.sh
+RUN bash /usr/local/share/ymir/test_opencode_tools.sh
+
+EXPOSE 4096
+
+ENTRYPOINT ["/usr/libexec/catatonit/catatonit", "--"]
+CMD ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"]
