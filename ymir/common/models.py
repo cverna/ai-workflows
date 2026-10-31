@@ -1120,6 +1120,10 @@ class OpenMergeRequestResult(BaseModel):
 
     url: str = Field(description="URL of the merge request")
     is_new_mr: bool = Field(description="True if newly created, False if an existing MR was reused")
+    dry_run: bool = Field(
+        default=False,
+        description="True when DRY_RUN suppressed creation; url is then empty",
+    )
 
 
 class FailedPipelineJob(BaseModel):

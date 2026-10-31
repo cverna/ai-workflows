@@ -9,7 +9,7 @@ from beeai_framework.adapters.mcp.serve.server import (
 )
 
 from ymir.common.mock_repos import apply_zstream_override_from_env
-from ymir.tools.gateway_utils import get_log_detective_mcp, setup_logging
+from ymir.tools.gateway_utils import enable_dual_http_endpoints, get_log_detective_mcp, setup_logging
 from ymir.tools.privileged.copr import BuildPackageTool, DownloadArtifactsTool
 from ymir.tools.privileged.distgit import CreateZstreamBranchTool
 from ymir.tools.privileged.errata import (
@@ -95,7 +95,7 @@ logger = logging.getLogger(__name__)
 async def _async_main():
     transport = os.getenv("MCP_TRANSPORT", "sse")
     config_kwargs = {"name": "Ymir Privileged MCP Gateway", "transport": transport}
-    if transport == "sse":
+    if transport in {"sse", "streamable-http"}:
         config_kwargs["settings"] = MCPSettings(
             host="0.0.0.0",  # noqa: S104
             port=int(os.getenv("SSE_PORT", "8000")),
@@ -106,6 +106,7 @@ async def _async_main():
     apply_zstream_override_from_env()
     tool_options: dict = {"working_directory": None}
     mcp = MCPServer(config=config)
+    enable_dual_http_endpoints(mcp, transport)
 
     log_detective_tools = await get_log_detective_mcp()
     if log_detective_tools:

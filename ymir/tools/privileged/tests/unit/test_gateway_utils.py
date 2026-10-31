@@ -8,7 +8,7 @@ from flexmock import flexmock
 from mcp import StdioServerParameters
 
 import ymir.tools.gateway_utils as gateway_utils_module
-from ymir.tools.gateway_utils import get_log_detective_mcp
+from ymir.tools.gateway_utils import enable_dual_http_endpoints, get_log_detective_mcp
 
 
 def _create_async_return(value):
@@ -90,3 +90,31 @@ class TestGetLogDetectiveMcp:
             await get_log_detective_mcp()
 
         assert "LogDetective MCP server is not available" in caplog.text
+
+
+class TestEnableDualHttpEndpoints:
+    def test_combines_sse_and_streamable_http_routes_when_sse(self):
+        sse_route = flexmock(path="/sse")
+        msg_route = flexmock(path="/messages")
+        mcp_route = flexmock(path="/mcp")
+
+        sse_app = flexmock(routes=[sse_route, msg_route])
+        http_app = flexmock(routes=[mcp_route])
+
+        fastmcp = flexmock()
+        fastmcp.should_receive("sse_app").with_args(None).once().and_return(sse_app)
+        fastmcp.should_receive("streamable_http_app").once().and_return(http_app)
+
+        mcp = flexmock(_server=fastmcp)
+        enable_dual_http_endpoints(mcp, "sse")
+
+        combined = fastmcp.sse_app()
+        assert combined is http_app
+        assert [r.path for r in combined.routes] == ["/mcp", "/sse", "/messages"]
+
+    def test_noop_for_stdio_transport(self):
+        fastmcp = flexmock()
+        fastmcp.should_receive("sse_app").never()
+        mcp = flexmock(_server=fastmcp)
+        enable_dual_http_endpoints(mcp, "stdio")
+

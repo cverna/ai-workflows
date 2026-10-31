@@ -1469,3 +1469,132 @@ async def test_resolve_qe_reviewers_tool():
     flexmock(_resolver).should_receive("resolve_qe_reviewers").replace_with(_mock_resolve)
     result = await ResolveQeReviewersTool().run(input={"package": "bash", "dist_git_branch": "c10s"})
     assert result.result == [99]
+
+
+# -- DRY_RUN guards -----------------------------------------------------------
+#
+# Dry run must be enforced inside the gateway, not only by the workflow that
+# calls it, so that any client (including a general-purpose coding agent) gets
+# the same guarantee. These tests assert that no network call is attempted.
+
+
+@pytest.mark.asyncio
+async def test_open_merge_request_dry_run(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "true")
+    # Any attempt to reach GitLab would blow up on the unmocked helper.
+    result = await OpenMergeRequestTool().run(
+        input={
+            "fork_url": "https://gitlab.com/redhat/rhel/rpms/bash",
+            "title": "Fix CVE-2025-12345",
+            "description": "Backport",
+            "target": "rhel-10.0",
+            "source": "automated-package-update-RHEL-1",
+        }
+    )
+    assert isinstance(result.result, OpenMergeRequestResult)
+    assert result.result.dry_run is True
+    assert result.result.is_new_mr is False
+    assert result.result.url == ""
+
+
+@pytest.mark.asyncio
+async def test_push_to_remote_repository_dry_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("DRY_RUN", "true")
+    result = await PushToRemoteRepositoryTool().run(
+        input={
+            "repository": "https://gitlab.com/redhat/rhel/rpms/bash",
+            "branch": "automated-package-update-RHEL-1",
+            "clone_path": str(tmp_path),
+        }
+    )
+    assert "Dry run, not pushing branch automated-package-update-RHEL-1" in result.result
+    assert "this is expected, not an error" in result.result
+
+
+@pytest.mark.asyncio
+async def test_add_merge_request_labels_dry_run(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "true")
+    result = await AddMergeRequestLabelsTool().run(
+        input={
+            "merge_request_url": "https://gitlab.com/redhat/rhel/rpms/bash/-/merge_requests/1",
+            "labels": ["target::zstream"],
+        }
+    )
+    assert "Dry run, not adding labels" in result.result
+
+
+@pytest.mark.asyncio
+async def test_add_merge_request_comment_dry_run(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "true")
+    result = await AddMergeRequestCommentTool().run(
+        input={
+            "merge_request_url": "https://gitlab.com/redhat/rhel/rpms/bash/-/merge_requests/1",
+            "comment": "Automated update",
+        }
+    )
+    assert "Dry run, not adding comment" in result.result
+
+
+@pytest.mark.asyncio
+async def test_add_blocking_merge_request_comment_dry_run(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "true")
+    result = await AddBlockingMergeRequestCommentTool().run(
+        input={
+            "merge_request_url": "https://gitlab.com/redhat/rhel/rpms/bash/-/merge_requests/1",
+            "comment": "Please review",
+        }
+    )
+    assert "Dry run, not adding a blocking comment" in result.result
+
+
+@pytest.mark.asyncio
+async def test_set_merge_request_reviewers_dry_run(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "true")
+    result = await SetMergeRequestReviewersTool().run(
+        input={
+            "merge_request_url": "https://gitlab.com/redhat/rhel/rpms/bash/-/merge_requests/1",
+            "reviewer_ids": [42],
+        }
+    )
+    assert "Dry run, not setting reviewers" in result.result
+
+
+@pytest.mark.asyncio
+async def test_retry_pipeline_job_dry_run(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "true")
+    result = await RetryPipelineJobTool().run(
+        input={
+            "project_url": "https://gitlab.com/redhat/rhel/rpms/bash",
+            "job_id": 12345,
+        }
+    )
+    assert "Dry run, not retrying job 12345" in result.result
+
+
+@pytest.mark.asyncio
+async def test_dry_run_disabled_still_pushes(monkeypatch, tmp_path):
+    """DRY_RUN=false must not short-circuit the real path."""
+    monkeypatch.delenv("DRY_RUN", raising=False)
+
+    from ymir.tools.privileged import gitlab as gitlab_module
+
+    pushed: list[list[str]] = []
+
+    async def _fake_git_cmd(command, **_kwargs):
+        pushed.append(command)
+        return None
+
+    flexmock(gitlab_module).should_receive("_run_git_cmd").replace_with(_fake_git_cmd)
+    flexmock(gitlab_module).should_receive("_get_git_auth_args").and_return([])
+    flexmock(gitlab_module).should_receive("_get_mock_git_env").and_return({})
+
+    result = await PushToRemoteRepositoryTool().run(
+        input={
+            "repository": "https://gitlab.com/redhat/rhel/rpms/bash",
+            "branch": "automated-package-update-RHEL-1",
+            "clone_path": str(tmp_path),
+        }
+    )
+
+    assert pushed, "expected a real git push when DRY_RUN is not set"
+    assert "Dry run" not in result.result

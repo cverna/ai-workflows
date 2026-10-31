@@ -49,6 +49,23 @@ logger = logging.getLogger(__name__)
 _STDERR_HINT_MAX = 500
 
 
+def _dry_run() -> bool:
+    """Whether mutating GitLab operations must be suppressed."""
+    return os.getenv("DRY_RUN", "False").lower() == "true"
+
+
+def _dry_run_result(action: str) -> StringToolOutput:
+    """Standard dry-run acknowledgement, matching the Jira tool convention.
+
+    Dry run is not an error: the caller should continue as if the write had
+    succeeded so a workflow can still be traced end to end.
+    """
+    logger.info("DRY_RUN is set, skipping %s", action)
+    return StringToolOutput(
+        result=f"Dry run, not {action} (this is expected, not an error)"
+    )
+
+
 def _git_subprocess_error(stderr: str | None, message: str) -> ToolError:
     """Log a git subprocess failure at ERROR level and return a ToolError with a stderr hint."""
     safe_stderr = sanitize_url(_sanitize_git_stderr(stderr or ""))
@@ -427,7 +444,7 @@ class ForkRepositoryTool(Tool[ForkRepositoryToolInput, ToolRunOptions, StringToo
             if fork := await asyncio.to_thread(get_fork):
                 return StringToolOutput(result=fork.get_git_urls()["git"])
 
-            if os.getenv("DRY_RUN", "False").lower() == "true":
+            if _dry_run():
                 logger.info("DRY_RUN is set, skipping fork creation — returning original repo URL")
                 return StringToolOutput(result=project.get_git_urls()["git"])
 
@@ -525,6 +542,17 @@ class OpenMergeRequestTool(
         target = tool_input.target
         source = tool_input.source
         labels = tool_input.labels
+        if _dry_run():
+            logger.info(
+                "DRY_RUN is set, skipping merge request %r from %s (%s -> %s)",
+                title,
+                fork_url,
+                source,
+                target,
+            )
+            return JSONToolOutput(
+                result=OpenMergeRequestResult(url="", is_new_mr=False, dry_run=True)
+            )
         logger.info(f"Connecting to GitLab API to open merge request from fork: {fork_url}")
         with tool_error_context(
             "Failed to open merge request",
@@ -735,6 +763,12 @@ class PushToRemoteRepositoryTool(Tool[PushToRemoteRepositoryToolInput, ToolRunOp
         clone_path = tool_input.clone_path
         force = tool_input.force
         safe_url = sanitize_url(repository)
+
+        if _dry_run():
+            return _dry_run_result(
+                f"pushing branch {branch} to {safe_url}"
+                + (" with force" if force else "")
+            )
 
         with tool_error_context(
             "Failed to push to remote repository",
@@ -949,6 +983,10 @@ class AddMergeRequestLabelsTool(Tool[AddMergeRequestLabelsToolInput, ToolRunOpti
     ) -> StringToolOutput:
         merge_request_url = tool_input.merge_request_url
         labels = tool_input.labels
+        if _dry_run():
+            return _dry_run_result(
+                f"adding labels {labels} to merge request {merge_request_url}"
+            )
         with tool_error_context(
             "Failed to add labels to merge request",
             merge_request_url=merge_request_url,
@@ -989,6 +1027,10 @@ class SetMergeRequestReviewersTool(Tool[SetMergeRequestReviewersToolInput, ToolR
     ) -> StringToolOutput:
         merge_request_url = tool_input.merge_request_url
         reviewer_ids = tool_input.reviewer_ids
+        if _dry_run():
+            return _dry_run_result(
+                f"setting reviewers {reviewer_ids} on merge request {merge_request_url}"
+            )
         with tool_error_context(
             "Failed to set reviewers on merge request",
             merge_request_url=merge_request_url,
@@ -1095,6 +1137,8 @@ class AddMergeRequestCommentTool(Tool[AddMergeRequestCommentToolInput, ToolRunOp
     ) -> StringToolOutput:
         merge_request_url = tool_input.merge_request_url
         comment = tool_input.comment
+        if _dry_run():
+            return _dry_run_result(f"adding comment to merge request {merge_request_url}")
         with tool_error_context(
             "Failed to add comment to merge request",
             merge_request_url=merge_request_url,
@@ -1135,6 +1179,10 @@ class AddBlockingMergeRequestCommentTool(
     ) -> StringToolOutput:
         merge_request_url = tool_input.merge_request_url
         comment = tool_input.comment
+        if _dry_run():
+            return _dry_run_result(
+                f"adding a blocking comment to merge request {merge_request_url}"
+            )
         with tool_error_context(
             "Failed to add blocking comment to merge request",
             merge_request_url=merge_request_url,
@@ -1198,6 +1246,8 @@ class RetryPipelineJobTool(Tool[RetryPipelineJobToolInput, ToolRunOptions, Strin
     ) -> StringToolOutput:
         project_url = tool_input.project_url
         job_id = tool_input.job_id
+        if _dry_run():
+            return _dry_run_result(f"retrying job {job_id} for project {project_url}")
         logger.info(f"Connecting to GitLab API to retry job {job_id} for project: {project_url}")
         with tool_error_context(
             f"Failed to retry job {job_id}",

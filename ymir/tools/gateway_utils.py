@@ -85,3 +85,27 @@ async def get_log_detective_mcp() -> list[MCPTool]:
             exc_info=True,
         )
         return []
+
+
+def enable_dual_http_endpoints(mcp: Any, transport: str) -> None:
+    """Expose both SSE (/sse, /messages) and Streamable HTTP (/mcp) routes when serving over SSE.
+
+    This allows SSE clients (BeeAI) and Streamable HTTP clients (OpenCode V2)
+    to connect to the same running MCP gateway instance on the same port.
+    """
+    if transport != "sse":
+        return
+    fastmcp = getattr(mcp, "_server", None)
+    if fastmcp is None or not hasattr(fastmcp, "sse_app") or not hasattr(fastmcp, "streamable_http_app"):
+        return
+
+    orig_sse_app = fastmcp.sse_app
+
+    def combined_http_app(mount_path: str | None = None):
+        sse_starlette = orig_sse_app(mount_path)
+        http_starlette = fastmcp.streamable_http_app()
+        http_starlette.routes.extend(sse_starlette.routes)
+        return http_starlette
+
+    fastmcp.sse_app = combined_http_app
+
