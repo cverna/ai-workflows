@@ -1399,7 +1399,35 @@ async def test_get_remote_branch_head_rejects_missing_branch():
                 "branch": "automated-update",
             }
         )
-    assert "Could not resolve exact head" in str(error.value)
+    # Absence is a fact about the repository, not a broken call; the message must
+    # not read like a tool failure.
+    assert "does not exist" in str(error.value)
+    assert "Could not resolve" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_get_remote_branch_head_reports_malformed_output_separately():
+    """A head line with a bad hash is not "absent" and must not say so."""
+
+    async def _mock_create_subprocess_exec(cmd, *args, **kwargs):
+        async def _mock_communicate():
+            return (b"not-a-sha\trefs/heads/automated-update\n", b"")
+
+        process = flexmock(returncode=0)
+        process.should_receive("communicate").replace_with(_mock_communicate)
+        return process
+
+    flexmock(asyncio).should_receive("create_subprocess_exec").replace_with(_mock_create_subprocess_exec)
+
+    with pytest.raises(ToolError) as error:
+        await GetRemoteBranchHeadTool().run(
+            input={
+                "repository": "https://gitlab.com/ai-bot/vim",
+                "branch": "automated-update",
+            }
+        )
+    assert "Unexpected git ls-remote output" in str(error.value)
+    assert "does not exist" not in str(error.value)
 
 
 @pytest.mark.asyncio

@@ -951,8 +951,17 @@ class GetRemoteBranchHeadTool(Tool[GetRemoteBranchHeadToolInput, ToolRunOptions,
             fields = line.split()
             if len(fields) == 2 and fields[1] == remote_ref:
                 matching_heads.append(fields[0])
+        if not matching_heads:
+            # git ls-remote exits 0 with no output for a missing ref, so this is
+            # a fact about the repository, not a failure of the call. Say so:
+            # "could not resolve" reads like a broken tool and invites a retry
+            # or a clarification request instead of the stream fallback.
+            raise ToolError(f"Branch {branch} does not exist on {safe_url}")
         if len(matching_heads) != 1 or not re.fullmatch(r"[0-9a-fA-F]{40}", matching_heads[0]):
-            raise ToolError(f"Could not resolve exact head of {remote_ref} on {safe_url}")
+            raise ToolError(
+                f"Unexpected git ls-remote output for {remote_ref} on {safe_url}: "
+                f"{len(matching_heads)} matching heads"
+            )
         return StringToolOutput(result=matching_heads[0].lower())
 
 

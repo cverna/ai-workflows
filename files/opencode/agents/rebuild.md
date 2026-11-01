@@ -78,7 +78,10 @@ machine reservations, work enqueueing, or automatic downstream handoffs.
    prepare a conditional local diff, but must not claim it fixes the CVE.
 3. Clone into a fresh `/git-repos/rebuild-<issue>-<unique-suffix>` checkout and
    record the base commit. Never reset another task's checkout or create a
-   missing remote branch. If target selection is ambiguous, stop and explain.
+   missing remote branch. Resolve the target branch with the `version-mapping`
+   helper first: if the internal RHEL branch is missing, use the CentOS Stream
+   branch on the same stream instead of stopping — a missing branch is normal,
+   and a different minor branch is never a substitute.
 4. Prepare only Release/changelog bookkeeping, following the target branch and
    package policy. Preserve Epoch, Version, source archives, patches and dependency
    declarations. Keep `%autorelease`/`%autochangelog`; describe a future rebuild

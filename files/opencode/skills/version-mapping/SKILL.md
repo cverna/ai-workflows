@@ -65,6 +65,10 @@ substitute a *different* minor branch. If `internal_branch_exists` is unknown an
 the case needs it, look it up with `get_internal_rhel_branches` and re-run with
 `--internal-branch-exists`; that is the only lookup required.
 
+Use `get_internal_rhel_branches` for existence. `get_remote_branch_head` answers
+a different question — the exact commit on a branch — and errors when the branch
+is absent, with a message saying so. Do not treat that error as a failed lookup.
+
 ## How to use the result
 
 - Clone and work on `target_branch` (also returned as `branch`).
