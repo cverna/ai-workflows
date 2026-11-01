@@ -80,6 +80,25 @@ add an explicit entry to them.
   RHEL build. Source and binary inspection do not establish shipped provenance;
   reproductions require a matching toolchain/configuration for that claim.
 
+## Deterministic helpers (skills)
+
+Three skills carry scripts. Use them instead of reasoning out the answer:
+
+| Skill | Use it when |
+|---|---|
+| `build-provenance` | A verdict depends on what shipped — you would otherwise report provenance as unverified |
+| `jira-labels` | You are about to write a label, or name one in a comment |
+| `version-mapping` | You need the branch, stream kind or namespace for a fix version |
+
+Each is at `/etc/opencode/skills/<name>/` with a `scripts/` entry point; the
+`SKILL.md` states when to run it and how to read the output. Run them rather than
+reproducing their logic in prose: label names and branch shapes are easy to get
+subtly wrong, and both scripts fail loudly instead of guessing.
+
+`build-provenance` needs network access to Brew. If it reports a connection or
+DNS failure, say so and keep confidence at medium — do not fill the gap with a
+plausible NVR.
+
 ## Dry run mode
 
 When `DRY_RUN` is active, publishing is suppressed in two independent places:

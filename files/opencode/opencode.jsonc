@@ -35,6 +35,10 @@
   // Harness-side half of DRY_RUN. The gateway is the hard floor; this blocks
   // the same calls one layer earlier and tells the model it is in dry run.
   "plugins": ["/etc/opencode/plugins/ymir-dry-run"],
+  // Deterministic helpers the model can reach for on its own: build provenance,
+  // Jira label mapping, and version-to-branch resolution. Each bundles a script
+  // rather than restating rules in prose.
+  "skills": ["/etc/opencode/skills"],
   "permissions": [
     // Package sources and dist-git clones live on a shared volume outside the
     // session worktree, so external access must not prompt.

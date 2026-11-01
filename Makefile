@@ -519,6 +519,11 @@ test-opencode-worker:
 	$(CONTAINER_TOOL) run --rm -v $(CURDIR):/src:z $(OPENCODE_TEST_IMAGE) \
 		pytest ymir/opencode_worker/tests/unit -q
 
+.PHONY: test-opencode-skills
+test-opencode-skills:
+	$(CONTAINER_TOOL) run --rm -v $(CURDIR):/src:z $(OPENCODE_TEST_IMAGE) \
+		pytest files/opencode/skills/tests -q
+
 .PHONY: start-opencode
 start-opencode:
 	DRY_RUN=$(DRY_RUN) MOCK_JIRA=$(MOCK_JIRA) JIRA_DRY_RUN=$(JIRA_DRY_RUN) $(COMPOSE_OPENCODE) up

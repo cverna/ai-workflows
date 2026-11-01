@@ -719,6 +719,36 @@ It verifies required executables, Node/JSON processing, Python RPM/Koji imports,
 Corepack safeguards and actual source-archive extraction into scratch space.
 It makes no model calls, contacts no build systems and runs no project scripts.
 
+### Skills with scripts
+
+Three skills under `files/opencode/skills/` carry deterministic scripts and are
+exposed through `"skills": ["/etc/opencode/skills"]`. They exist because the hard
+part is the data, not the judgement:
+
+| Skill | Script | Replaces |
+|---|---|---|
+| `build-provenance` | `provenance.py` | guessing which build shipped |
+| `jira-labels` | `labels.py` | naming labels from memory |
+| `version-mapping` | `version_map.py` | reasoning out branch shapes |
+
+`jira-labels` exists because models invent label names: `ymir_not_affected` was
+proposed twice, and Jira accepts any string silently, so the error is invisible.
+`version-mapping` reuses `ymir.common.version_utils`, the same code the BeeAI
+agents route on, rather than restating the rules.
+
+Skills are advisory: the model decides when to load one. That is deliberate —
+it lets it reach for a helper in cases we did not anticipate — but it means a
+skill cannot be a guarantee. Anything that must not be skipped belongs at the
+action boundary (gateway guard or plugin hook), not in a skill.
+
+`build-provenance` needs network access to Brew. When the environment cannot
+reach it the script reports the connection failure and exits non-zero, rather
+than returning a plausible-looking build.
+
+```bash
+make test-opencode-skills   # 21 tests, no network
+```
+
 ### DRY_RUN in the OpenCode profile
 
 Dry run is enforced in two independent layers, because the OpenCode agent has no
