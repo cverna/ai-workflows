@@ -50,14 +50,40 @@ def issue_key_from(task: Task) -> str | None:
 
 def build_prompt(task: Task, issue_key: str, agent: str) -> str:
     topic = task.metadata.get("topic") or "the referenced Jira issue"
-    return (
+    prompt = (
         f"Continue the Ymir workflow for Jira issue {issue_key} ({topic}) "
         f"at the {agent} stage.\n\n"
         "Use the ymir-privileged_* tools for Jira, GitLab and maintainer/shared "
         "rule lookups. Decide only from evidence you actually collected; if the "
         "evidence is blocked or inconclusive, say so and route conservatively "
-        "rather than assuming the package is safe." + result_prompt_suffix()
+        "rather than assuming the package is safe."
     )
+    # The fetcher already ran the eligibility check, so pass its routing facts
+    # instead of making the agent re-derive them (and possibly disagree). Only
+    # truthy facts are forwarded: the schema defaults every field to False/None,
+    # so forwarding defaults would claim knowledge the queue did not have.
+    routing = [
+        (label, task.metadata[key])
+        for key, label in (
+            ("needs_internal_fix", "needs_internal_fix"),
+            ("is_older_zstream", "is_older_zstream"),
+            ("internal_target_branch", "internal_target_branch"),
+        )
+        if task.metadata.get(key)
+    ]
+    if routing:
+        facts = ", ".join(
+            f"{label}={str(value).lower() if isinstance(value, bool) else value}"
+            for label, value in routing
+        )
+        prompt += (
+            "\n\nThe queue passed these routing facts with the task: "
+            f"{facts}. Use them rather than re-deriving them, and pass "
+            "`needs_internal_fix` to the version-mapping helper. A mapped branch that "
+            "does not exist yet is normal: RHEL-first fixes create it, stream-first "
+            "fixes land on the CentOS Stream branch and are inherited."
+        )
+    return prompt + result_prompt_suffix()
 
 
 async def _record_error(redis: aioredis.Redis, details: str, issue_key: str | None, task: Task | None) -> None:

@@ -54,6 +54,28 @@ the agent has to guess is a field it may get wrong.
 
 For non-CVE issues the rule does not apply; judge them directly.
 
+## Target branch
+
+Resolve the branch before deciding anything about it, and resolve it with the
+helper rather than by reasoning:
+
+```
+version_map.py --fix-version <fixVersion> --component <package> \
+  [--needs-internal-fix] [--internal-branch-exists yes|no]
+```
+
+`--needs-internal-fix` comes from `check_cve_triage_eligibility`;
+`--internal-branch-exists` comes from `get_internal_rhel_branches` for the
+package, and only matters for Z-stream stream-first routing.
+
+**A branch that does not exist yet is not a reason to stop.** RHEL-first and
+older-Z fixes create the internal branch during backport; stream-first fixes land
+on `c<N>s` and are inherited. Do not pick a *different* minor branch, and do not
+answer `clarification-needed` merely because the mapped branch is absent,
+Brew has no candidate build for it, or the component looks unfamiliar. Those are
+normal for work that has not shipped yet. Ask only when the fixVersion itself
+cannot be parsed, or when the issue names no identifiable package.
+
 ## Fix and workflow checks
 
 - Check existing MRs and maintainer decisions before recommending new work.

@@ -100,6 +100,24 @@ class TestResultContract:
         assert "```json" in prompt
         assert "RHEL-1" in prompt
 
+    def test_prompt_carries_fetcher_routing_facts(self):
+        task = Task(
+            metadata={
+                "issue": "RHEL-2",
+                "needs_internal_fix": True,
+                "is_older_zstream": False,
+                "internal_target_branch": "rhel-10.2",
+            }
+        )
+        prompt = build_prompt(task, "RHEL-2", "triage")
+        assert "needs_internal_fix=true" in prompt
+        assert "internal_target_branch=rhel-10.2" in prompt
+        assert "does not exist yet is normal" in prompt
+
+    def test_prompt_omits_routing_block_without_facts(self):
+        prompt = build_prompt(Task.from_issue("RHEL-3"), "RHEL-3", "triage")
+        assert "routing facts" not in prompt
+
 
 class TestProcessPayload:
     @pytest.mark.asyncio

@@ -154,20 +154,55 @@ class TestVersionMap:
         assert result["normalized"] == "rhel-9.8.z"
         assert result["stream_kind"] == "current_z_stream"
 
-    def test_current_y_stream_is_not_rewritten(self):
+    def test_y_stream_lands_on_centos_stream(self):
+        # BeeAI's _map_version_to_branch defaults to c<N>s unless the CVE needs
+        # an internal fix first; a Y-stream fixVersion is not an internal branch.
         result = version_map.map_fix_version("rhel-9.10", config=CONFIG)
         assert result["normalized"] == "rhel-9.10"
         assert result["stream_kind"] == "y_stream"
-        assert result["branch"] == "rhel-9.10.0"
+        assert result["target_branch"] == "c9s"
 
     def test_rhel10_branch_has_no_suffix(self):
+        result = version_map.map_fix_version(
+            "rhel-10.2.z", config=CONFIG, internal_branch_exists=True
+        )
+        assert result["target_branch"] == "rhel-10.2"
+        assert result["internal_branch"] == "rhel-10.2"
+
+    def test_missing_internal_branch_falls_back_to_stream(self):
+        # The msgpack case: rhel-10.2.z, no internal rhel-10.2 branch. This must
+        # route to CentOS Stream, not become a clarification.
+        result = version_map.map_fix_version(
+            "rhel-10.2.z", config=CONFIG, internal_branch_exists=False
+        )
+        assert result["target_branch"] == "c10s"
+        assert "inherit" in result["resolution_reason"]
+
+    def test_unknown_branch_existence_warns_and_defaults_to_stream(self):
         result = version_map.map_fix_version("rhel-10.2.z", config=CONFIG)
-        assert result["branch"] == "rhel-10.2"
+        assert result["target_branch"] == "c10s"
+        assert any("not supplied" in w for w in result["warnings"])
+
+    def test_internal_fix_uses_internal_branch_even_if_absent(self):
+        # RHEL-first CVE on a major with a Y-stream: the branch is created.
+        result = version_map.map_fix_version(
+            "rhel-9.9.z", config=CONFIG, needs_internal_fix=True
+        )
+        assert result["target_branch"] == "rhel-9.9.0"
+        assert "created if absent" in result["resolution_reason"]
+
+    def test_internal_fix_on_maintenance_major_uses_stream(self):
+        # RHEL 8 has no Y-stream, so the fix belongs on c8s even when internal.
+        result = version_map.map_fix_version(
+            "rhel-8.10.z", config=CONFIG, needs_internal_fix=True
+        )
+        assert result["target_branch"] == "c8s"
 
     def test_older_zstream_detected(self):
         result = version_map.map_fix_version("rhel-9.4.z", config=CONFIG)
         assert result["older_zstream"] is True
         assert result["stream_kind"] == "older_z_stream"
+        assert result["target_branch"] == "rhel-9.4.0"
 
     def test_modular_branch_shape(self):
         result = version_map.map_fix_version(
