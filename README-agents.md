@@ -749,6 +749,13 @@ than returning a plausible-looking build.
 make test-opencode-skills   # 21 tests, no network
 ```
 
+`files/opencode/` is bind-mounted into the agent container, which runs as uid
+1000 while host files appear as container root. A file written `0600` — or a
+directory `0700` — is then silently unreadable, and the server starts with no
+configuration at all: no DRY_RUN plugin, no skills, no gateway MCP, and nothing
+in the log. `make start-opencode` therefore runs `check-opencode-perms` first
+and refuses to start when any path under `files/opencode/` is not world-readable.
+
 ### DRY_RUN in the OpenCode profile
 
 Dry run is enforced in two independent layers, because the OpenCode agent has no

@@ -525,12 +525,27 @@ test-opencode-skills:
 		pytest files/opencode/skills/tests -q
 
 .PHONY: start-opencode
-start-opencode:
+start-opencode: check-opencode-perms
 	DRY_RUN=$(DRY_RUN) MOCK_JIRA=$(MOCK_JIRA) JIRA_DRY_RUN=$(JIRA_DRY_RUN) $(COMPOSE_OPENCODE) up
 
 .PHONY: start-opencode-detached
-start-opencode-detached:
+start-opencode-detached: check-opencode-perms
 	DRY_RUN=$(DRY_RUN) MOCK_JIRA=$(MOCK_JIRA) JIRA_DRY_RUN=$(JIRA_DRY_RUN) $(COMPOSE_OPENCODE) up -d
+
+# The agent container bind-mounts files/opencode and runs as uid 1000, while a
+# host file owned by the repository user appears as container root. A file
+# written 0600 -- or a directory 0700 -- is then silently unreadable, and the
+# server starts with no configuration at all: no DRY_RUN plugin, no skills, no
+# gateway MCP, and no error in the log. Fail before starting instead.
+.PHONY: check-opencode-perms
+check-opencode-perms:
+	@bad=$$(find files/opencode -type d ! -perm -o+rx -print -o -type f ! -perm -o+r -print); \
+	if [ -n "$$bad" ]; then \
+	  echo "opencode-agent cannot read these paths:" >&2; \
+	  echo "$$bad" >&2; \
+	  echo "fix: find files/opencode -type d -exec chmod 755 {} +; find files/opencode -type f -exec chmod 644 {} +" >&2; \
+	  exit 1; \
+	fi
 
 .PHONY: stop-opencode
 stop-opencode:
