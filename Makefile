@@ -528,6 +528,22 @@ test-opencode-skills:
 start-opencode: check-opencode-perms
 	DRY_RUN=$(DRY_RUN) MOCK_JIRA=$(MOCK_JIRA) JIRA_DRY_RUN=$(JIRA_DRY_RUN) $(COMPOSE_OPENCODE) up
 
+# Serve the testing-jiras fixtures instead of production Jira. MOCK_JIRA is read
+# by the gateway at import time, so the gateway has to be recreated; the mirror
+# is mounted read-only because DRY_RUN blocks the writes anyway.
+JIRA_FIXTURES ?= /tmp/testing-jiras/jiras
+.PHONY: start-opencode-mock
+start-opencode-mock: check-opencode-perms
+	DRY_RUN=true MOCK_JIRA=true JIRA_MOCK_FILES_HOST=$(JIRA_FIXTURES) $(COMPOSE_OPENCODE) up -d
+
+# Score the OpenCode triage agent against the e2e expectations on mock Jira.
+EVAL_REPEAT ?= 1
+EVAL_FIXTURES ?= /tmp/testing-jiras/mock_data/triage
+.PHONY: eval-opencode-mock
+eval-opencode-mock:
+	python3 files/opencode/eval/run_eval.py --repeat $(EVAL_REPEAT) \
+		--pre-fix --fixtures $(EVAL_FIXTURES)
+
 .PHONY: start-opencode-detached
 start-opencode-detached: check-opencode-perms
 	DRY_RUN=$(DRY_RUN) MOCK_JIRA=$(MOCK_JIRA) JIRA_DRY_RUN=$(JIRA_DRY_RUN) $(COMPOSE_OPENCODE) up -d

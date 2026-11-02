@@ -12,10 +12,13 @@ previous answer.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from ymir.opencode_worker import client as client_module
 from ymir.opencode_worker.client import (
     OpenCodeClient,
     OpenCodeError,
@@ -197,3 +200,24 @@ def test_unwrap_accepts_both_shapes():
     assert unwrap({"data": "not-an-object"}) == {"data": "not-an-object"}
     assert unwrap("nonsense") == {}
     assert unwrap(None) == {}
+
+
+@pytest.mark.asyncio
+async def test_request_timeout_is_not_reported_as_unexpected(monkeypatch):
+    """asyncio.TimeoutError is not an aiohttp.ClientError and has an empty str()."""
+
+    class _SlowerThanTimeout:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def request(self, *_args, **_kwargs):
+            raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(client_module.aiohttp, "ClientSession", lambda **_kw: _SlowerThanTimeout())
+    client = OpenCodeClient(_settings("http://127.0.0.1:1"))
+
+    with pytest.raises(OpenCodeError, match="TimeoutError"):
+        await client.session("ses_x")

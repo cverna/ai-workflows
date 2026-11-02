@@ -180,7 +180,14 @@ async def process_payload(
             await _requeue_or_error(redis, task, issue_key, agent, str(error), settings, queue)
             return
         except Exception as error:  # pragma: no cover - defensive
-            await _record_error(redis, f"Unexpected failure for {issue_key}: {error}", issue_key, task)
+            # Never record an empty reason: a bare TimeoutError used to surface
+            # as "Unexpected failure for ISSUE: " with nothing to diagnose.
+            await _record_error(
+                redis,
+                f"Unexpected failure for {issue_key}: {type(error).__name__}: {error!r}",
+                issue_key,
+                task,
+            )
             return
 
         await _remember_session(redis, issue_key, agent, session_id, settings)

@@ -230,3 +230,82 @@ def test_scripts_are_json_cli_compatible():
     assert callable(version_map.main)
     assert labels.main(["--resolution", "backport"]) == 0
     json.loads('{"ok": true}')
+
+
+class TestProvenanceFixtureOverride:
+    """The eval fixtures freeze Jira and git; the override freezes Brew too."""
+
+    def _manifest(self, tmp_path, *, flag=True, commit="a" * 40):
+        data = {
+            "eval_fixture": flag,
+            "entries": {"libtiff": {"rhel-9.2.0": {"commit": commit, "repository": "https://example/repo"}}},
+        }
+        path = tmp_path / "provenance.json"
+        path.write_text(json.dumps(data))
+        return path
+
+    def test_pins_the_fixture_commit_and_claims_no_nvr(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(provenance, "OVERRIDE_PATH", self._manifest(tmp_path))
+        result = provenance.resolve("libtiff", "rhel-9.2.0", session=object())
+
+        assert result["status"] == "resolved_from_fixture"
+        assert result["source"]["commit"] == "a" * 40
+        assert result["build"]["nvr"] is None
+        assert any("eval fixture" in w for w in result["warnings"])
+
+    def test_ignores_a_manifest_without_the_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(provenance, "OVERRIDE_PATH", self._manifest(tmp_path, flag=False))
+        session = _FakeSession({"rhel-9.2.0-candidate": [_build("t-1-1", "1", "1", 5)]}, {5: {"source": "git+x#y"}})
+        result = provenance.resolve("libtiff", "rhel-9.2.0", session=session)
+
+        assert result["status"] == "resolved"
+        assert result["source"]["commit"] == "y"
+
+    def test_unknown_branch_falls_through(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(provenance, "OVERRIDE_PATH", self._manifest(tmp_path))
+        session = _FakeSession({}, {})
+        result = provenance.resolve("zlib", "c9s", session=session)
+
+        assert result["status"] == "no_build"
+
+    def test_falls_back_to_the_fixture_branch_when_names_differ(self, tmp_path, monkeypatch):
+        """The harness does not apply per-case config overrides, so the mapped
+        branch can differ from the branch the fixture pins (expat: rhel-10.1 vs
+        rhel-10.2). A per-issue manifest makes that fallback unambiguous."""
+        data = {
+            "eval_fixture": True,
+            "entries": {
+                "expat": {
+                    "c10s": {"commit": "b" * 40, "repository": "https://example/stream"},
+                    "rhel-10.1": {"commit": "c" * 40, "repository": "https://example/rhel"},
+                }
+            },
+        }
+        path = tmp_path / "provenance.json"
+        path.write_text(json.dumps(data))
+        monkeypatch.setattr(provenance, "OVERRIDE_PATH", path)
+
+        result = provenance.resolve("expat", "rhel-10.2", session=object())
+
+        assert result["status"] == "resolved_from_fixture"
+        assert result["source"]["commit"] == "c" * 40
+        assert any("pins expat on rhel-10.1" in w for w in result["warnings"])
+
+    def test_ambiguous_fallback_is_refused(self, tmp_path, monkeypatch):
+        data = {
+            "eval_fixture": True,
+            "entries": {
+                "expat": {
+                    "rhel-10.1": {"commit": "c" * 40, "repository": "https://example/a"},
+                    "rhel-10.2": {"commit": "d" * 40, "repository": "https://example/b"},
+                }
+            },
+        }
+        path = tmp_path / "provenance.json"
+        path.write_text(json.dumps(data))
+        monkeypatch.setattr(provenance, "OVERRIDE_PATH", path)
+        session = _FakeSession({}, {})
+
+        result = provenance.resolve("expat", "rhel-10.9", session=session)
+
+        assert result["status"] == "no_build"

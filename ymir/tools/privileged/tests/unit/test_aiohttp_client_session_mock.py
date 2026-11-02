@@ -77,3 +77,65 @@ async def test_post_comment_updates_mock_file(mock_session):
     comments = json.loads(issue_path.read_text())["fields"]["comment"]
     assert comments["total"] == 1
     assert comments["comments"][0]["body"] == "comment"
+
+
+@pytest.mark.asyncio
+async def test_dev_status_summary_reports_no_linked_work(mock_session):
+    """An unmocked dev-status raised NotImplementedError, which reads as breakage."""
+    session, base_url, _ = mock_session
+
+    async with session.get(f"{base_url}/rest/dev-status/1.0/issue/summary?issueId=123") as response:
+        response.raise_for_status()
+        data = await response.json()
+
+    assert data["summary"]["repository"]["byInstanceType"] == {}
+    assert data["summary"]["pullrequest"]["byInstanceType"] == {}
+
+
+@pytest.mark.asyncio
+async def test_search_answers_key_restricted_jql_from_fixtures(mock_session):
+    session, base_url, mock_dir = mock_session
+    for key, summary in (("RHEL-1", "one"), ("RHEL-2", "two")):
+        (mock_dir / key).write_text(
+            json.dumps(
+                {
+                    "key": key,
+                    "id": key.split("-")[1],
+                    "fields": {
+                        "summary": summary,
+                        "labels": ["Security"],
+                        "fixVersions": [{"name": "rhel-9.8.z"}],
+                    },
+                }
+            )
+        )
+
+    async with session.post(
+        f"{base_url}/rest/api/3/search/jql",
+        json={"jql": "key in (RHEL-1, RHEL-2) ORDER BY key", "maxResults": 50},
+    ) as response:
+        response.raise_for_status()
+        data = await response.json()
+
+    assert [i["key"] for i in data["issues"]] == ["RHEL-1", "RHEL-2"]
+    assert data["issues"][1]["fields"]["summary"] == "two"
+    assert data["issues"][1]["fields"]["fixVersions"] == [{"name": "rhel-9.8.z"}]
+
+
+@pytest.mark.asyncio
+async def test_search_ignores_unknown_keys_and_unindexed_jql(mock_session):
+    session, base_url, _ = mock_session
+
+    async with session.post(
+        f"{base_url}/rest/api/3/search/jql",
+        json={"jql": "project = RHEL AND labels = Security ORDER BY created DESC"},
+    ) as response:
+        response.raise_for_status()
+        assert await response.json() == {"issues": []}
+
+    async with session.post(
+        f"{base_url}/rest/api/3/search/jql",
+        json={"jql": "key in (RHEL-404)"},
+    ) as response:
+        response.raise_for_status()
+        assert await response.json() == {"issues": []}

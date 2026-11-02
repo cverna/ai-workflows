@@ -257,3 +257,30 @@ class TestSessionScope:
 
         assert "opencode:session:RHEL-7:triage" in redis.deleted
         assert "opencode:session:RHEL-7:triage" not in redis.store
+
+
+@pytest.mark.asyncio
+async def test_unexpected_failure_names_the_exception(lock_free):
+    """A bare TimeoutError used to be recorded as an empty reason."""
+
+    def failing(*_args, **_kwargs):
+        async def _inner():
+            raise TimeoutError()
+
+        return _inner()
+
+    flexmock(worker_module).should_receive("run_prompt").replace_with(failing)
+    redis = _FakeRedis()
+
+    await process_payload(
+        redis,
+        Task.from_issue("RHEL-88").to_json().encode(),
+        settings=_settings(),
+        agent="triage",
+        queue=RedisQueues.TRIAGE_QUEUE.value,
+        client_factory=lambda: None,
+    )
+
+    assert redis.pushed[0][0] == RedisQueues.ERROR_LIST.value
+    entry = json.loads(redis.pushed[0][1])
+    assert "TimeoutError" in entry["error"]["details"]

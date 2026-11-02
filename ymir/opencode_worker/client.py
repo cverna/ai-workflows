@@ -90,8 +90,11 @@ class OpenCodeClient:
                         raise OpenCodeError(
                             f"{method} {path} returned non-JSON body: {raw[:200]!r}"
                         ) from error
-        except aiohttp.ClientError as error:
-            raise OpenCodeError(f"{method} {path} failed: {error}") from error
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            # asyncio.TimeoutError is not an aiohttp.ClientError and its str() is
+            # empty, so it used to escape as "Unexpected failure: " with no clue
+            # what timed out.
+            raise OpenCodeError(f"{method} {path} failed: {type(error).__name__}: {error!r}") from error
 
     async def create_session(self, agent: str, title: str) -> str:
         payload = {"agent": agent, "title": title, "location": self._location}

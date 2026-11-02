@@ -44,6 +44,15 @@ EVR, and reports every candidate it saw. Pass `--tag` to override.
   authenticated access. The output says so explicitly — do not paper over it.
 - It is **read-only and unauthenticated**. It never writes and never downloads.
 
+## Eval fixtures
+
+When `.eval/provenance.json` exists in the work directory and is marked
+`"eval_fixture": true`, the script reports the fixture's pinned commit instead
+of Brew (`status: resolved_from_fixture`, no NVR). That file is written only by
+`files/opencode/eval`, which uses the mock-Jira fixtures: they freeze Jira and
+git at a past date while Brew keeps serving today's build, so without it every
+backport case would look already fixed. Production never has the file.
+
 ## How to use the result
 
 Quote the NVR and commit in your answer, and compare that commit with the tree

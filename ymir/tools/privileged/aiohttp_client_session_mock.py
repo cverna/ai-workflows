@@ -5,10 +5,57 @@ import re
 from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import aiofiles
 from beeai_framework.tools import ToolError
+
+_ISSUE_KEY_RE = re.compile(r"\bRHEL-\d+\b")
+
+
+async def _empty_dev_status_summary():
+    """No linked repositories or pull requests in a mock issue."""
+    return {
+        "summary": {
+            "repository": {"byInstanceType": {}},
+            "pullrequest": {"byInstanceType": {}},
+        }
+    }
+
+
+async def _empty_dev_status_detail():
+    return {"detail": []}
+
+
+async def _search_jira_mock(payload: dict | None) -> dict:
+    """Answer key-restricted JQL from the fixtures; everything else stays empty.
+
+    The mock has no index, so only ``key`` clauses can be answered faithfully.
+    Returning empty for every other query matches the previous behaviour, which
+    keeps both harnesses on the same footing: neither sees work history.
+    """
+    jql = str((payload or {}).get("jql") or "")
+    issues = []
+    for key in sorted(set(_ISSUE_KEY_RE.findall(jql))):
+        try:
+            data = await _read_jira_mock(key)
+        except ToolError:
+            continue
+        fields = data.get("fields") or {}
+        issues.append(
+            {
+                "key": key,
+                "id": data.get("id"),
+                "fields": {
+                    name: fields.get(name)
+                    for name in ("summary", "fixVersions", "labels", "issuetype", "components", "status")
+                },
+            }
+        )
+    limit = (payload or {}).get("maxResults")
+    if isinstance(limit, int) and limit > 0:
+        issues = issues[:limit]
+    return {"issues": issues}
 
 
 async def _get_transitions():
@@ -120,6 +167,13 @@ class aiohttpClientSessionMock:
                 yield SimpleNamespace(status=200, raise_for_status=lambda: None, json=_get_verified_user)
             else:
                 yield SimpleNamespace(status=200, raise_for_status=lambda: None, json=_get_unverified_user)
+        elif urlparse(args[0]).path.endswith("/rest/dev-status/1.0/issue/summary"):
+            # An empty summary means "no linked work", not an error. Leaving this
+            # unmocked made get_jira_dev_status raise NotImplementedError, which
+            # reads as a tool failure rather than an answer about the issue.
+            yield SimpleNamespace(status=200, raise_for_status=lambda: None, json=_empty_dev_status_summary)
+        elif urlparse(args[0]).path.endswith("/rest/dev-status/1.0/issue/detail"):
+            yield SimpleNamespace(status=200, raise_for_status=lambda: None, json=_empty_dev_status_detail)
         else:
             raise NotImplementedError()
 
@@ -171,11 +225,12 @@ class aiohttpClientSessionMock:
             await _write_jira_mock(match_data.group(1), current_issue)
             yield SimpleNamespace(raise_for_status=lambda: None)
         elif self.search_post_regex.fullmatch(args[0]):
+            payload = kwargs.get("json") or {}
 
-            async def _empty_search():
-                return {"issues": []}
+            async def _search_result():
+                return await _search_jira_mock(payload)
 
-            yield SimpleNamespace(raise_for_status=lambda: None, json=_empty_search)
+            yield SimpleNamespace(raise_for_status=lambda: None, json=_search_result)
         elif match_data := self.transitions_get_regex.fullmatch(args[0]):
             jira_data = await _read_jira_mock(match_data.group(1))
             if kwargs["json"]["transition"]["id"] == 1:

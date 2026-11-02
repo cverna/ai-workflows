@@ -11,16 +11,54 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 import koji
 
 BREWHUB_URL = "https://brewhub.engineering.redhat.com/brewhub"
 
+# Eval hook: the mock-Jira fixtures freeze Jira and git at a past date, but Brew
+# keeps serving today's builds. Pointing this at a fixture manifest makes the
+# applicability check inspect the pinned commit instead of a build that already
+# contains the fix. The file must set "eval_fixture": true to be honoured.
+OVERRIDE_PATH = Path(
+    os.getenv("YMIR_EVAL_PROVENANCE") or "/home/beeai/work/.eval/provenance.json"
+)
+
 try:  # RPM's comparator is the only correct way to order EVR strings.
     from rpm import labelCompare
 except ImportError:  # pragma: no cover - rpm is installed in the image
     labelCompare = None
+
+
+def fixture_override(package: str, branch: str) -> tuple[dict, str] | None:
+    """Return the pinned commit for (package, branch), if an eval fixture exists.
+
+    The fixture's branch can differ from the mapped branch: the harness does not
+    apply per-case ``rhel_config_override``/``zstream_override``, so expat is
+    pinned on ``rhel-10.1`` while the issue maps to ``rhel-10.2``. The manifest is
+    per issue, so falling back to the package's only entry is unambiguous.
+    """
+    try:
+        data = json.loads(OVERRIDE_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not data.get("eval_fixture"):
+        return None
+    by_branch = (data.get("entries") or {}).get(package) or {}
+    if not by_branch:
+        return None
+    if branch in by_branch:
+        entry = by_branch[branch]
+        return (entry, branch) if entry.get("commit") else None
+    internal = {b: e for b, e in by_branch.items() if not b.startswith("c")}
+    candidates = internal or by_branch
+    if len(candidates) != 1:
+        return None
+    matched, entry = next(iter(candidates.items()))
+    return (entry, matched) if entry.get("commit") else None
 
 
 def candidate_tags(branch: str) -> list[str]:
@@ -57,6 +95,44 @@ def resolve(
     url: str = BREWHUB_URL,
 ) -> dict:
     """Return the newest candidate build for *package* on *branch*."""
+    override = fixture_override(package, branch)
+    if override:
+        entry, matched_branch = override
+        warnings = [
+            "eval fixture: provenance pinned to the fixture's pre-fix commit; "
+            "no NVR is implied and none should be reported as shipped"
+        ]
+        if matched_branch != branch:
+            warnings.append(
+                f"eval fixture: the fixture pins {package} on {matched_branch}, "
+                f"not the queried {branch}; the commit comes from the fixture"
+            )
+        return {
+            "package": package,
+            "branch": branch,
+            "brewhub": None,
+            "tags_checked": [],
+            "candidates": [],
+            "warnings": warnings,
+            "artifacts": {
+                "downloadable_without_auth": False,
+                "reason": "eval fixture: no build artifact corresponds to the pinned commit",
+            },
+            "status": "resolved_from_fixture",
+            "build": {
+                "nvr": None,
+                "build_id": None,
+                "tag": None,
+                "owner": None,
+                "completion_time": None,
+            },
+            "source": {
+                "repository": entry.get("repository"),
+                "commit": entry["commit"],
+                "raw": "eval fixture",
+            },
+        }
+
     session = session or koji.ClientSession(url)
     tags = tags or candidate_tags(branch)
     result: dict = {
