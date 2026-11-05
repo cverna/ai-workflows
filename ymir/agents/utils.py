@@ -62,13 +62,16 @@ def resolve_chat_model_override(agent_type: str) -> None:
         os.environ["CHAT_MODEL"] = override
 
 
-def is_reasoning_enabled() -> bool:
-    chat_model = os.environ.get("CHAT_MODEL", "")
+def is_reasoning_enabled(model_name: str | None = None) -> bool:
+    chat_model = model_name if model_name is not None else os.environ.get("CHAT_MODEL", "")
     return "claude" in chat_model and bool(os.getenv("REASONING_EFFORT"))
 
 
-def get_chat_model() -> ChatModel:
-    chat_model = os.environ["CHAT_MODEL"]
+def get_chat_model(model_name: str | None = None) -> ChatModel:
+    # An explicit model_name lets an in-workflow agent (e.g. the adversarial
+    # reviewer) use a different model from the process-wide CHAT_MODEL without
+    # the startup-only resolve_chat_model_override() clobbering it.
+    chat_model = model_name if model_name is not None else os.environ["CHAT_MODEL"]
     # lowering the temperature makes the model stop backporting too soon
     # but should yield more predictable results, similar for top_p (tried 0.5)
     temperature = float(os.getenv("TEMPERATURE", "0.6"))

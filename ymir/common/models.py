@@ -564,6 +564,70 @@ class AssessedApplicabilityResult(ApplicabilityResult):
     confidence: ConfidenceAssessment
 
 
+class ReviewVerdict(StrEnum):
+    """Adversarial review outcome for a not-affected conclusion."""
+
+    UPHELD = "upheld"
+    OVERTURNED = "overturned"
+    INCONCLUSIVE = "inconclusive"
+
+
+class ClaimCheck(BaseModel):
+    """One applicability evidence claim, re-checked by the adversarial reviewer."""
+
+    claim: str = Field(min_length=1, pattern=r"\S", description="The claim being checked")
+    status: Literal["verified", "refuted", "unverifiable"] = Field(
+        description="Result of re-checking the claim"
+    )
+    evidence: str = Field(min_length=1, pattern=r"\S", description="What the re-check found")
+
+
+class AdversarialReviewResult(BaseModel):
+    """Output schema for the adversarial review of a not-affected conclusion."""
+
+    verdict: ReviewVerdict = Field(description="Whether the not-affected conclusion survives the review")
+    independent_conclusion: Literal["affected", "not_affected", "inconclusive"] = Field(
+        description="The reviewer's own applicability conclusion"
+    )
+    claim_checks: list[ClaimCheck] = Field(
+        default_factory=list, description="Re-verification of each concrete applicability evidence claim"
+    )
+    counter_evidence: str | None = Field(
+        default=None, description="Evidence against the not-affected conclusion, if any was found"
+    )
+    confidence: ConfidenceAssessment = Field(description="Evidence strength of the review itself")
+
+
+class AutoCloseBlocker(StrEnum):
+    """Named reasons a not-affected issue must not auto-close.
+
+    The first ten are emitted by evaluate_autoclose_decision(); STATE_CHANGED
+    is added by the close step's runtime status re-check, never by the gate.
+    """
+
+    NO_REVIEW = "no_review"
+    CONFIDENCE = "confidence"
+    REVIEW = "review"
+    REVIEW_CONFIDENCE = "review_confidence"
+    PREP_FALLBACK = "prep_fallback"
+    SEVERITY = "severity"
+    SENSITIVE_PACKAGE = "sensitive_package"
+    SIBLINGS = "siblings"
+    DUPLICATE = "duplicate"
+    NO_COMMENT = "no_comment"
+    STATE_CHANGED = "state_changed"
+
+
+class AutoCloseDecision(BaseModel):
+    """Deterministic auto-close gate decision: eligible iff no blockers."""
+
+    blockers: list[AutoCloseBlocker] = Field(default_factory=list)
+
+    @property
+    def eligible(self) -> bool:
+        return not self.blockers
+
+
 class ErrorData(BaseModel):
     """Data for error resolution."""
 

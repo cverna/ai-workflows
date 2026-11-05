@@ -75,3 +75,43 @@ def test_vertex_anthropic_request_retains_cache_injection_points(
     # Confirm the flag is what controls it: with caching off BeeAI strips them.
     model.allow_prompt_caching = False
     assert "cache_control_injection_points" not in transform()
+
+
+@pytest.mark.parametrize(
+    ("env_model", "explicit_model", "expected"),
+    [
+        ("vertexai:claude-opus-4-6", "anthropic:claude-sonnet-4-6", "anthropic:claude-sonnet-4-6"),
+        ("vertexai:claude-opus-4-6", None, "vertexai:claude-opus-4-6"),
+        ("vertexai:gemini-2.5-pro", None, "vertexai:gemini-2.5-pro"),
+    ],
+)
+def test_get_chat_model_honors_explicit_model_name(monkeypatch, env_model, explicit_model, expected):
+    """An in-workflow agent can pick its own model without touching CHAT_MODEL."""
+    captured: dict = {}
+
+    def from_name(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(allow_prompt_caching=None, tool_choice_support=None)
+
+    monkeypatch.setenv("CHAT_MODEL", env_model)
+    monkeypatch.setattr(utils.ChatModel, "from_name", from_name)
+
+    utils.get_chat_model(model_name=explicit_model)
+
+    assert captured["args"][0] == expected
+    if "claude" in expected and expected.startswith("vertexai"):
+        assert captured["kwargs"]["allow_prompt_caching"] is True
+    else:
+        assert "allow_prompt_caching" not in captured["kwargs"]
+
+
+def test_is_reasoning_enabled_honors_explicit_model_name(monkeypatch):
+    monkeypatch.setenv("CHAT_MODEL", "vertexai:gemini-2.5-pro")
+    monkeypatch.setenv("REASONING_EFFORT", "high")
+
+    assert utils.is_reasoning_enabled() is False
+    assert utils.is_reasoning_enabled(model_name="anthropic:claude-sonnet-4-6") is True
+
+    monkeypatch.delenv("REASONING_EFFORT")
+    assert utils.is_reasoning_enabled(model_name="anthropic:claude-sonnet-4-6") is False

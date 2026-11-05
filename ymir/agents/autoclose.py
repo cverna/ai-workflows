@@ -1,0 +1,144 @@
+"""Deterministic auto-close gate for not-affected conclusions.
+
+The gate never calls an LLM or reads Jira state: every workflow fact that
+decides whether a not-affected Jira issue may be closed automatically is
+passed in explicitly, and every non-close is explainable by named blockers.
+No LLM judges whether closing is safe — policy lives here, in versioned
+code. The only deployment configuration read is the optional
+sensitive-package extension (pass ``sensitive`` to pin it).
+
+Fail-safe principle (docs/adversarial_review_architecture.md): absence of
+review is never approval. A skipped or failed review, an unassessed
+confidence or an unposted justification comment each block the close.
+"""
+
+import os
+
+from pydantic import BaseModel, Field
+
+from ymir.common.models import (
+    AdversarialReviewResult,
+    AutoCloseBlocker,
+    AutoCloseDecision,
+    ConfidenceAssessment,
+    ReviewVerdict,
+)
+
+# Packages where a wrong not-affected call has the highest blast radius.
+# Deliberately conservative; extend per environment via
+# AUTO_CLOSE_SENSITIVE_PACKAGES (comma-separated) rather than shrinking.
+SENSITIVE_PACKAGES: frozenset[str] = frozenset(
+    {
+        "kernel",
+        "kernel-rt",
+        "glibc",
+        "openssl",
+        "openssl-libs",
+        "gnutls",
+        "nss",
+        "nss-util",
+        "cryptsetup",
+        "openssh",
+        "sudo",
+        "systemd",
+        "polkit",
+        "selinux-policy",
+    }
+)
+
+# Jira severity values (compared case-insensitively) eligible for auto-close.
+# Critical and Important are never auto-closed; unknown or unset severity blocks.
+AUTO_CLOSE_ALLOWED_SEVERITIES: frozenset[str] = frozenset({"low", "moderate"})
+
+
+def sensitive_packages(env: dict[str, str] | None = None) -> frozenset[str]:
+    """Built-in sensitive list plus the AUTO_CLOSE_SENSITIVE_PACKAGES extension.
+
+    ``env`` defaults to ``os.environ``; passing an explicit mapping keeps
+    callers (and tests) pure.
+    """
+    source = os.environ if env is None else env
+    extra = source.get("AUTO_CLOSE_SENSITIVE_PACKAGES", "")
+    return SENSITIVE_PACKAGES | {package.strip().lower() for package in extra.split(",") if package.strip()}
+
+
+class AutoCloseEvaluationInput(BaseModel):
+    """Everything the gate needs; assembled by the triage workflow.
+
+    Defaults are the fail-safe choices: omitted review, confidence or
+    comment each block the close on their own.
+    """
+
+    review: AdversarialReviewResult | None = Field(
+        default=None, description="Adversarial review result; None means skipped or failed"
+    )
+    applicability_confidence: ConfidenceAssessment | None = Field(
+        default=None, description="Applicability agent's self-assessment; None means unassessed"
+    )
+    used_fallback_sources: bool = Field(
+        default=False, description="True when sources were analyzed unpatched (RPM prep failed)"
+    )
+    severity: str | None = Field(default=None, description="Raw Jira severity value, e.g. 'Low'")
+    package: str = Field(default="", description="Source package under triage")
+    pending_zstream_issues: list[str] = Field(
+        default_factory=list, description="Unshipped z-stream siblings for the same CVE"
+    )
+    open_duplicate: str | None = Field(
+        default=None, description="Open duplicate tracker for the same CVE, if any"
+    )
+    comment_posted: bool = Field(
+        default=False, description="True only when the justification comment was posted this run"
+    )
+
+
+def evaluate_autoclose_decision(
+    decision_input: AutoCloseEvaluationInput,
+    sensitive: frozenset[str] | None = None,
+) -> AutoCloseDecision:
+    """Decide whether a not-affected issue may auto-close.
+
+    No LLM or Jira access and never raises: every workflow fact is passed
+    in. The only configuration read is the sensitive-package set, which
+    callers can pin by passing ``sensitive``. Blockers accumulate in the
+    order documented in docs/adversarial_review_architecture.md, so the
+    decision is deterministic and reproducible from the recorded inputs.
+    STATE_CHANGED is never emitted here — it belongs to the close step's
+    runtime status re-check.
+    """
+    blockers: list[AutoCloseBlocker] = []
+
+    review = decision_input.review
+    if review is None:
+        blockers.append(AutoCloseBlocker.NO_REVIEW)
+
+    applicability_confidence = decision_input.applicability_confidence
+    if applicability_confidence is None or applicability_confidence.level != "high":
+        blockers.append(AutoCloseBlocker.CONFIDENCE)
+
+    if review is not None:
+        if review.verdict != ReviewVerdict.UPHELD:
+            blockers.append(AutoCloseBlocker.REVIEW)
+        if review.confidence.level != "high":
+            blockers.append(AutoCloseBlocker.REVIEW_CONFIDENCE)
+
+    if decision_input.used_fallback_sources:
+        blockers.append(AutoCloseBlocker.PREP_FALLBACK)
+
+    severity = (decision_input.severity or "").strip().lower()
+    if severity not in AUTO_CLOSE_ALLOWED_SEVERITIES:
+        blockers.append(AutoCloseBlocker.SEVERITY)
+
+    resolved_sensitive = sensitive_packages() if sensitive is None else sensitive
+    if decision_input.package.lower() in resolved_sensitive:
+        blockers.append(AutoCloseBlocker.SENSITIVE_PACKAGE)
+
+    if decision_input.pending_zstream_issues:
+        blockers.append(AutoCloseBlocker.SIBLINGS)
+
+    if decision_input.open_duplicate:
+        blockers.append(AutoCloseBlocker.DUPLICATE)
+
+    if not decision_input.comment_posted:
+        blockers.append(AutoCloseBlocker.NO_COMMENT)
+
+    return AutoCloseDecision(blockers=blockers)
