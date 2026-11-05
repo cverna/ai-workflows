@@ -191,6 +191,16 @@ class JiraLabels(Enum):
     TRIAGED_DEFERRED_REBASE = "ymir_triaged_deferred_rebase"
     TRIAGED_DEFERRED_REBUILD = "ymir_triaged_deferred_rebuild"
 
+    # Adversarial review outcome for a not-affected conclusion. Assessment
+    # metadata, not workflow state (see _terminal_ymir_labels).
+    REVIEW_UPHELD = "ymir_review_upheld"
+    REVIEW_OVERTURNED = "ymir_review_overturned"
+    REVIEW_INCONCLUSIVE = "ymir_review_inconclusive"
+
+    # Audit marker for issues Ymir closed automatically. Terminal: a closed
+    # issue must not be recovered as an abandoned in-flight task.
+    AUTOCLOSED = "ymir_autoclosed"
+
     # Applied when package maintainers must create a missing internal
     # z-stream branch before Ymir can continue processing the issue.
     MANUAL_BRANCH_NEEDED = "ymir_manual_branch_needed"

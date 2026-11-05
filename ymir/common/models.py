@@ -615,6 +615,7 @@ class AutoCloseBlocker(StrEnum):
     SIBLINGS = "siblings"
     DUPLICATE = "duplicate"
     NO_COMMENT = "no_comment"
+    STATUS_CHANGES_DISABLED = "status_changes_disabled"
     STATE_CHANGED = "state_changed"
 
 

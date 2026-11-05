@@ -983,16 +983,19 @@ async def change_jira_status(
     jira_issue: str,
     status: str,
     available_tools: list[Tool],
+    resolution: str | None = None,
 ) -> None:
     if os.getenv("JIRA_ALLOW_STATUS_CHANGES", "false").lower() != "true":
         logger.info(
             f"JIRA_ALLOW_STATUS_CHANGES is not set; skipping status change of {jira_issue} to {status!r}"
         )
         return
+    tool_kwargs: dict = {"issue_key": jira_issue, "status": status}
+    if resolution:
+        tool_kwargs["resolution"] = resolution
     await run_tool(
         "change_jira_status",
-        issue_key=jira_issue,
-        status=status,
+        **tool_kwargs,
         available_tools=available_tools,
     )
 

@@ -56,6 +56,45 @@ on the Jira issue. A completed run replaces previous
 confidence labels, or removes them if applicability remains unassessed. See the
 [label reference](jira_label_workflow_routing.md#confidence-labels) for definitions.
 
+### Adversarial review of not-affected conclusions
+
+When the applicability agent concludes a package is **not affected**, triage
+runs a second, adversarially-framed review before posting the conclusion to
+Jira. The reviewer re-checks every concrete evidence claim against the same
+source tree, then actively hunts for refuting evidence (downstream patches,
+binary RPM subpackages, vendored copies, fix-patch application, maintainer
+context and sibling streams) and returns its own conclusion. See
+[the design](docs/adversarial_review_architecture.md).
+
+- **Upheld**: the conclusion was independently re-verified. The Jira comment
+  records the review and triage keeps `not-affected`.
+- **Overturned**: the issue is downgraded to `clarification-needed` with both
+  positions in the comment — two agents disagreeing is human territory. The
+  resolution is never flipped to affected automatically.
+- **Inconclusive**: the conclusion is kept but flagged as unverified.
+
+If the review cannot run, the comment says so explicitly. A missing review is
+never approval: it never changes the resolution and blocks any auto-close.
+Triage maintains one of `ymir_review_upheld`, `ymir_review_overturned` or
+`ymir_review_inconclusive`; see the
+[label reference](jira_label_workflow_routing.md#review-outcome-labels). The
+reviewer can use a different model family via `REVIEW_CHAT_MODEL` so its
+errors do not simply repeat the applicability agent's.
+
+After an **upheld** review, a deterministic gate decides whether the issue
+may be closed automatically: both the applicability assessment and the review
+must be high confidence, sources must have been fully prepared, severity must
+be low or moderate, the package must not be on the sensitive list, and no
+sibling Z-stream issues may be pending. Every blocked close is logged with
+its named reasons. Eligible issues are transitioned to `Closed` with
+resolution `Not a Bug` (configurable via `JIRA_CLOSE_STATUS` and
+`JIRA_CLOSE_RESOLUTION`) and marked `ymir_autoclosed`. This respects the
+platform-wide `JIRA_ALLOW_STATUS_CHANGES` guard — with it off, no status
+transition is performed.
+
+`DRY_RUN=true` runs the full review → gate → close path with no Jira writes;
+the decision and every suppressed action are logged instead.
+
 ### Z-stream branch consistency
 
 Before creating a working branch, backport, rebase, rebuild, and MR consolidation

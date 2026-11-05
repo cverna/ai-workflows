@@ -213,7 +213,8 @@ V1 blockers (all must be absent to close):
 | `SIBLINGS` | pending z-stream sibling issues exist for the same CVE |
 | `DUPLICATE` | an open duplicate tracker exists |
 | `NO_COMMENT` | the justification comment was not posted this run — a close requires a visible justification, an explicit precondition rather than the incidental property that `NOT_AFFECTED` is always commented |
-| `STATE_CHANGED` | pre-close status re-check found the issue no longer in the expected state (a human touched it) |
+| `STATUS_CHANGES_DISABLED` | the platform-wide `JIRA_ALLOW_STATUS_CHANGES` flag is off, so no status transition is possible |
+| `STATE_CHANGED` | pre-close status re-check found the issue no longer in the expected state (a human touched it); emitted by the close step, never by the gate |
 
 Severity comes from the Jira custom field, read via `get_jira_details`
 during the review step — no new tooling.
@@ -227,12 +228,22 @@ visible the moment the issue closes:
    outcome appended.
 2. Write confidence + review labels (existing pattern).
 3. Evaluate the gate. If eligible and not `dry_run`:
-   - re-read the issue status; skip with `STATE_CHANGED` if it moved,
-   - `transition_jira_issue` to `JIRA_CLOSE_STATUS` (default `Closed`),
-   - set the resolution (`Not a Bug`) via `set_jira_fields`,
+   - re-read the issue status; skip with `STATE_CHANGED` if it is already
+     `Closed`, `Done` or `Release Pending`,
+   - `change_jira_status` to `JIRA_CLOSE_STATUS` (default `Closed`), passing
+     `JIRA_CLOSE_RESOLUTION` (default `Not a Bug`) in the same transition
+     payload — `ChangeJiraStatusTool` gained an optional `resolution` field
+     for this,
    - add the `ymir_autoclosed` label.
 4. A failed transition logs and sets the retry path; the conclusion is
    already communicated, only the close is missing.
+
+`JIRA_ALLOW_STATUS_CHANGES` is a pre-existing platform guard on **all**
+status transitions (it defaults to `false` in the deployment configmap). The
+close goes through `tasks.change_jira_status`, which respects it; the gate
+receives it as an explicit input and returns `STATUS_CHANGES_DISABLED` when
+it is off. This is not a new auto-close control — it is a deployment
+prerequisite shared with the other agents.
 
 **Interaction with the reproducer agent:** reproducer tests are enqueued for
 not-affected issues too (a confirming test is valuable there). Auto-close
@@ -284,15 +295,18 @@ sections for all of the above.
 | Close transition fails after comment | retry path (`ymir_retry_needed`); conclusion still communicated |
 | Worker killed between comment and close | issue open with not-affected comment + labels; a `ymir_todo` re-run re-triages |
 | Reviewer disagrees (`OVERTURNED`) | clarification-needed for a human; never a close, never a silent flip |
+| Triage LLM emits `NOT_AFFECTED` directly | no applicability check ran, so `adversarial_review_skipped = True`; the comment states the gap and the gate blocks the close with `NO_REVIEW` |
 
 ## Observability
 
 - Reviewer runs carry `GlobalTrajectoryMiddleware` trajectories (Phoenix),
   tagged with issue and verdict for offline analysis.
-- `metrics_middleware` counters: `adversarial_review_runs`,
-  `adversarial_review_verdicts{verdict}`, `autoclose_eligible`,
-  `autoclose_executed`, `autoclose_blocked{blocker}`.
-- Every gate decision is logged with its blocker list.
+- Every gate decision is logged with its blocker list, and every close with
+  its status and resolution; the comment, labels and trajectories provide a
+  complete audit trail of why an issue was or was not closed.
+- Custom counters (`autoclose_eligible`, `autoclose_executed`,
+  `autoclose_blocked{blocker}`) are future work — the repo currently has no
+  metrics sink for agent-level counters.
 
 ## Configuration
 
@@ -302,6 +316,7 @@ sections for all of the above.
 | `AUTO_CLOSE_SENSITIVE_PACKAGES` | — | extends the built-in sensitive list |
 | `JIRA_CLOSE_STATUS` | `Closed` | target status |
 | `JIRA_CLOSE_RESOLUTION` | `Not a Bug` | target resolution |
+| `JIRA_ALLOW_STATUS_CHANGES` | `false` (platform default) | pre-existing platform guard; auto-close only runs when it is `true` |
 
 ## Testing
 

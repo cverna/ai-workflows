@@ -89,6 +89,13 @@ class AutoCloseEvaluationInput(BaseModel):
     comment_posted: bool = Field(
         default=False, description="True only when the justification comment was posted this run"
     )
+    status_changes_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the platform permits Jira status transitions "
+            "(JIRA_ALLOW_STATUS_CHANGES); without it an issue cannot be closed"
+        ),
+    )
 
 
 def evaluate_autoclose_decision(
@@ -140,5 +147,8 @@ def evaluate_autoclose_decision(
 
     if not decision_input.comment_posted:
         blockers.append(AutoCloseBlocker.NO_COMMENT)
+
+    if not decision_input.status_changes_enabled:
+        blockers.append(AutoCloseBlocker.STATUS_CHANGES_DISABLED)
 
     return AutoCloseDecision(blockers=blockers)

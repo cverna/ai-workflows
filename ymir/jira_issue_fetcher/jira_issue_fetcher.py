@@ -376,9 +376,10 @@ class JiraIssueFetcher:
         For most in-flight labels, any other Ymir label blocks recovery (the
         same signal triage_agent's dedup check uses — outcome written but
         in-flight not cleaned up, or an orthogonal workflow label such as
-        ``ymir_consolidate_base``). Applicability-confidence labels are
-        assessment metadata, not workflow state, so they never block recovery
-        even though they coexist with both triage and downstream stages.
+        ``ymir_consolidate_base``). Assessment labels — applicability
+        confidence and adversarial review outcome — are metadata, not
+        workflow state, so they never block recovery even though they
+        coexist with both triage and downstream stages.
 
         ``ymir_reproducer_in_progress`` is special: reproducer runs in parallel
         with triage/fix agents and deliberately leaves their outcome labels
@@ -393,6 +394,9 @@ class JiraIssueFetcher:
             JiraLabels.APPLICABILITY_CONFIDENCE_LOW.value,
             JiraLabels.APPLICABILITY_CONFIDENCE_MEDIUM.value,
             JiraLabels.APPLICABILITY_CONFIDENCE_HIGH.value,
+            JiraLabels.REVIEW_UPHELD.value,
+            JiraLabels.REVIEW_OVERTURNED.value,
+            JiraLabels.REVIEW_INCONCLUSIVE.value,
         }
         reproducer_in_progress = JiraLabels.REPRODUCER_IN_PROGRESS.value
         for label in self.IN_FLIGHT_LABELS:

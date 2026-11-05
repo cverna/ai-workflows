@@ -1608,6 +1608,45 @@ def test_find_stale_in_flight_label_ignores_confidence_during_backport(fetcher):
     assert result == JiraLabels.TRIAGED_BACKPORT.value
 
 
+def test_find_stale_in_flight_label_ignores_review_label(fetcher):
+    """An adversarial-review label is metadata, not a blocking outcome.
+
+    It is written before the terminal label, so a worker killed in that
+    window leaves it beside ymir_triage_in_progress.
+    """
+    issue = {"fields": {"updated": _STALE_UPDATED}}
+    result = fetcher._find_stale_in_flight_label(
+        issue,
+        [
+            JiraLabels.TRIAGE_IN_PROGRESS.value,
+            JiraLabels.REVIEW_UPHELD.value,
+        ],
+    )
+    assert result == JiraLabels.TRIAGE_IN_PROGRESS.value
+
+
+@pytest.mark.parametrize(
+    "review_label",
+    [
+        JiraLabels.REVIEW_UPHELD.value,
+        JiraLabels.REVIEW_OVERTURNED.value,
+        JiraLabels.REVIEW_INCONCLUSIVE.value,
+    ],
+)
+def test_find_stale_in_flight_label_ignores_review_during_backport(fetcher, review_label):
+    """Review outcomes coexist with the backport handoff label for as long as
+    the downstream task waits in Redis; recovery must still see it as stale."""
+    issue = {"fields": {"updated": _STALE_UPDATED}}
+    result = fetcher._find_stale_in_flight_label(
+        issue,
+        [
+            JiraLabels.TRIAGED_BACKPORT.value,
+            review_label,
+        ],
+    )
+    assert result == JiraLabels.TRIAGED_BACKPORT.value
+
+
 def test_find_stale_in_flight_label_downstream_stage(fetcher):
     issue = {"fields": {"updated": _STALE_UPDATED}}
     result = fetcher._find_stale_in_flight_label(issue, [JiraLabels.TRIAGED_REBUILD.value])

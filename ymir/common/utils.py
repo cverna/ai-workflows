@@ -40,6 +40,9 @@ logger = logging.getLogger(__name__)
 
 FIXED_IN_BUILD_CUSTOM_FIELD = "customfield_10578"
 DOWNSTREAM_COMPONENT_CUSTOM_FIELD = "customfield_10669"  # Downstream Component Name
+# Mirrors SEVERITY_CUSTOM_FIELD in ymir.tools.privileged.jira; agents read the
+# raw get_jira_details response and cannot import the privileged tool module.
+SEVERITY_CUSTOM_FIELD = "customfield_10840"
 
 ToolResultT = TypeVar("ToolResultT", bound=BaseModel)
 

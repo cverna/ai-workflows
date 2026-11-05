@@ -41,6 +41,7 @@ def _green_input(**overrides) -> AutoCloseEvaluationInput:
         "pending_zstream_issues": [],
         "open_duplicate": None,
         "comment_posted": True,
+        "status_changes_enabled": True,
     }
     payload.update(overrides)
     return AutoCloseEvaluationInput(**payload)
@@ -162,6 +163,12 @@ def test_open_duplicate_blocks():
 def test_suppressed_comment_blocks():
     decision = evaluate_autoclose_decision(_green_input(comment_posted=False))
     assert decision.blockers == [AutoCloseBlocker.NO_COMMENT]
+
+
+def test_disabled_status_changes_block():
+    """The platform-wide JIRA_ALLOW_STATUS_CHANGES guard is a prerequisite."""
+    decision = evaluate_autoclose_decision(_green_input(status_changes_enabled=False))
+    assert decision.blockers == [AutoCloseBlocker.STATUS_CHANGES_DISABLED]
 
 
 def test_blockers_accumulate_in_documented_order():

@@ -107,6 +107,34 @@ runs even though it already carries a confidence label. Abandoned-task recovery
 ignores them too, so a worker killed between the confidence write and the
 terminal label is still retried.
 
+### Review Outcome Labels
+
+| Label | Meaning |
+|-------|---------|
+| `ymir_review_upheld` | An independent adversarial review re-verified the not-affected conclusion |
+| `ymir_review_overturned` | The review found counter-evidence; the issue is downgraded to clarification-needed |
+| `ymir_review_inconclusive` | The review could neither uphold nor refute the conclusion |
+
+Triage writes one of these after an adversarial review of a `not-affected`
+conclusion and replaces it on each completed run. If the review was skipped or
+failed, all three are removed — absence of a review never looks like approval.
+Dry runs do not update them, and the writes are independent of comment
+suppression. Like confidence labels these are assessment metadata, not
+workflow state: the triage duplicate guard and abandoned-task recovery ignore
+them. See [the design](docs/adversarial_review_architecture.md).
+
+### Auto-Close Labels
+
+| Label | Meaning |
+|-------|---------|
+| `ymir_autoclosed` | Ymir closed the issue automatically after an upheld review and an all-green deterministic gate. Audit marker, terminal. |
+
+The gate is deliberately conservative (dual high confidence, fully prepared
+sources, low/moderate severity only, sensitive-package exclusions). It also
+honours the platform-wide `JIRA_ALLOW_STATUS_CHANGES` guard: with that flag
+off, no status transition happens and no `ymir_autoclosed` label is added.
+See [the design](docs/adversarial_review_architecture.md).
+
 ### Error Labels
 
 | Label | Meaning | Blocks Retry? | Action |

@@ -29,17 +29,23 @@ from ymir.agents.triage_agent import (
     _should_update_jira,
     _terminal_ymir_labels,
     determine_target_branch,
+    label_adversarial_review,
     label_applicability_confidence,
     main,
+    maybe_auto_close_not_affected,
+    render_adversarial_review_result,
     render_prompt,
     run_workflow,
     validate_triage_output,
 )
 from ymir.common.constants import YMIR_COMMENT_MARKER, JiraLabels
 from ymir.common.models import (
+    AdversarialReviewResult,
     AssessedApplicabilityResult,
     AutoProcessingMode,
     BackportData,
+    ClaimCheck,
+    ClarificationNeededData,
     ConfidenceAssessment,
     ConsolidatedIssue,
     CVEEligibilityResult,
@@ -49,12 +55,13 @@ from ymir.common.models import (
     RebaseData,
     RebuildData,
     Resolution,
+    ReviewVerdict,
     Task,
     TriageEligibility,
     TriageInputSchema,
     TriageOutputSchema,
 )
-from ymir.common.utils import FIXED_IN_BUILD_CUSTOM_FIELD
+from ymir.common.utils import FIXED_IN_BUILD_CUSTOM_FIELD, SEVERITY_CUSTOM_FIELD
 from ymir.common.version_utils import extract_downstream_package, is_modular, parse_module_stream
 
 
@@ -95,12 +102,98 @@ def test_terminal_labels_still_block_duplicate_triage():
     labels = [
         JiraLabels.TRIAGED_REBASE.value,
         JiraLabels.APPLICABILITY_CONFIDENCE_HIGH.value,
+        JiraLabels.REVIEW_UPHELD.value,
     ]
     assert _terminal_ymir_labels(labels) == [JiraLabels.TRIAGED_REBASE.value]
 
 
 def test_closed_mr_label_is_not_terminal():
     assert _terminal_ymir_labels([JiraLabels.MR_CLOSED.value]) == []
+
+
+REVIEW_LABELS = {
+    JiraLabels.REVIEW_UPHELD.value,
+    JiraLabels.REVIEW_OVERTURNED.value,
+    JiraLabels.REVIEW_INCONCLUSIVE.value,
+}
+
+
+def _review_result(verdict: ReviewVerdict = ReviewVerdict.UPHELD, **overrides) -> AdversarialReviewResult:
+    payload = {
+        "verdict": verdict,
+        "independent_conclusion": "not_affected" if verdict == ReviewVerdict.UPHELD else "inconclusive",
+        "claim_checks": [
+            ClaimCheck(
+                claim="Vulnerable files absent", status="verified", evidence="find returned no matches"
+            )
+        ],
+        "confidence": ConfidenceAssessment(level="high", reason="Re-checked the target tree"),
+    }
+    payload.update(overrides)
+    return AdversarialReviewResult(**payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", [None, *ReviewVerdict])
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_adversarial_review_labels_replace_previous_verdict(monkeypatch, verdict, dry_run):
+    updates = []
+
+    async def record_labels(**kwargs):
+        updates.append(kwargs)
+
+    monkeypatch.setattr(agent_tasks, "set_jira_labels", record_labels)
+    review = _review_result(verdict) if verdict else None
+    await label_adversarial_review("RHEL-1", review, dry_run=dry_run, user_triggered=False)
+    if dry_run:
+        assert updates == []
+        return
+    expected = f"ymir_review_{verdict.value}" if verdict else None
+    assert len(updates) == 1
+    assert updates[0]["jira_issue"] == "RHEL-1"
+    assert updates[0]["labels_to_add"] == ([expected] if expected else [])
+    assert set(updates[0]["labels_to_remove"]) == REVIEW_LABELS - ({expected} if expected else set())
+    assert updates[0]["critical"] is False
+
+
+@pytest.mark.parametrize("label", REVIEW_LABELS)
+def test_review_labels_are_not_terminal(label):
+    """A requeued sibling primary must still run with only a review label."""
+    assert _terminal_ymir_labels([label]) == []
+
+
+def test_render_adversarial_review_result_without_review():
+    assert render_adversarial_review_result(None, skipped=False) == ""
+    skipped = render_adversarial_review_result(None, skipped=True)
+    assert "unavailable" in skipped
+    assert "not eligible for auto-close" in skipped
+
+
+def test_render_adversarial_review_result_upheld():
+    review = _review_result(
+        ReviewVerdict.UPHELD,
+        claim_checks=[
+            ClaimCheck(claim="Files absent", status="verified", evidence="find returned no matches"),
+            ClaimCheck(claim="Build flag off", status="refuted", evidence="spec enables it"),
+        ],
+    )
+    text = render_adversarial_review_result(review, skipped=False)
+    assert "upheld" in text
+    assert "independently re-verified" in text
+    assert "2 (1 verified, 1 refuted)" in text
+    assert "not eligible for auto-close" not in text
+
+
+@pytest.mark.parametrize("verdict", [ReviewVerdict.INCONCLUSIVE, ReviewVerdict.OVERTURNED])
+def test_render_adversarial_review_result_blocks_close(verdict):
+    review = _review_result(
+        verdict,
+        counter_evidence="Fix patch applies cleanly to the vendored copy",
+    )
+    text = render_adversarial_review_result(review, skipped=False)
+    assert verdict.value in text
+    assert "*Counter-evidence*: Fix patch applies cleanly to the vendored copy" in text
+    assert "not eligible for auto-close" in text
 
 
 @pytest.mark.parametrize(
@@ -1257,6 +1350,11 @@ async def test_branch_creation_notice_uses_final_resolution(
     applicability_agent.should_receive("run").replace_with(
         _async_return(flexmock(last_message=flexmock(text=applicability.model_dump_json())))
     )
+    review = _review_result(ReviewVerdict.UPHELD)
+    review_agent = flexmock()
+    review_agent.should_receive("run").replace_with(
+        _async_return(flexmock(last_message=flexmock(text=review.model_dump_json())))
+    )
     flexmock(t_agent).should_receive("mcp_tools").replace_with(_mock_mcp_tools)
     monkeypatch.setattr(agent_tasks, "mcp_tools", _mock_mcp_tools)
     flexmock(t_agent).should_receive("run_tool").replace_with(_mock_run_tool)
@@ -1272,6 +1370,7 @@ async def test_branch_creation_notice_uses_final_resolution(
         agent_tasks, "clone_and_prep_sources", _async_return((tmp_path, tmp_path, prep_ok, None))
     )
     monkeypatch.setattr(t_agent, "create_applicability_agent", lambda *_: applicability_agent)
+    monkeypatch.setattr(t_agent, "create_adversarial_review_agent", lambda *_: review_agent)
     monkeypatch.setattr(t_agent, "check_build_in_buildroot", _async_return(in_buildroot))
     siblings = [ConsolidatedIssue(issue_key="RHEL-200")] if scenario == "consolidated" else []
     monkeypatch.setattr(t_agent, "find_rebuild_siblings", _async_return((siblings, None)))
@@ -1318,6 +1417,12 @@ async def test_branch_creation_notice_uses_final_resolution(
         JiraLabels.APPLICABILITY_CONFIDENCE_MEDIUM.value,
     }
     labels = [call for call in labels if call not in confidence_updates]
+    labels = [
+        call
+        for call in labels
+        if not REVIEW_LABELS.intersection(call.get("labels_to_add", []))
+        and not REVIEW_LABELS.intersection(call.get("labels_to_remove", []))
+    ]
     if initial_resolution == Resolution.REBASE and scenario in ("sibling", "waiting"):
         assert not state.hold_for_manual_branch_creation
         assert not labels
@@ -1336,6 +1441,291 @@ async def test_branch_creation_notice_uses_final_resolution(
     assert ("create the branch manually" in text) is expect_hold
     if expect_hold:
         assert all("label to RHEL-99999" in call["comment_text"] for call in comments)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario",
+    ["upheld", "overturned", "inconclusive", "agent_error", "no_sources"],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_adversarial_review_workflow(scenario, dry_run, _mock_env_vars, monkeypatch, tmp_path):
+    """The review state runs only on not-affected, downgrades an overturn to
+    clarification-needed, and never turns a failed review into approval.
+    """
+    monkeypatch.setenv("GIT_REPO_BASEPATH", str(tmp_path))
+    monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
+    common_data = {
+        "package": "bash",
+        "jira_issue": "RHEL-99999",
+        "cve_id": "CVE-2025-1234",
+        "fix_version": "rhel-10.3.z",
+    }
+    output = TriageOutputSchema(
+        resolution=Resolution.REBUILD,
+        data=RebuildData(**common_data, dependency_issue="RHEL-1", dependency_component="openssl"),
+    )
+    eligibility = CVEEligibilityResult(
+        is_cve=True, eligibility=TriageEligibility.IMMEDIATELY, reason="Eligible"
+    )
+    applicability = AssessedApplicabilityResult(
+        is_affected=False,
+        justification_category="Component not Present",
+        explanation="The vulnerable code is absent from the shipped tree.",
+        confidence=ConfidenceAssessment(level="high", reason="Direct source inspection"),
+    )
+
+    review = None
+    if scenario in ("upheld", "overturned", "inconclusive"):
+        verdict = ReviewVerdict(scenario)
+        review = _review_result(
+            verdict,
+            independent_conclusion={
+                "upheld": "not_affected",
+                "overturned": "affected",
+                "inconclusive": "inconclusive",
+            }[scenario],
+            claim_checks=[
+                ClaimCheck(
+                    claim="Vulnerable files absent",
+                    status="refuted" if scenario == "overturned" else "verified",
+                    evidence="Re-ran find on the target tree",
+                )
+            ],
+            counter_evidence="Fix patch applies cleanly" if scenario == "overturned" else None,
+        )
+
+    @asynccontextmanager
+    async def _mock_mcp_tools(*_args, **_kwargs):
+        yield []
+
+    async def _mock_run_tool(name, **kwargs):
+        if name == "check_cve_triage_eligibility":
+            return eligibility.model_dump()
+        if name == "verify_issue_author":
+            return True
+        if name == "get_internal_rhel_branches":
+            return []
+        if name == "get_jira_details":
+            return {
+                "fields": {
+                    FIXED_IN_BUILD_CUSTOM_FIELD: "openssl-3.0-1.el10",
+                    SEVERITY_CUSTOM_FIELD: {"value": "Low"},
+                }
+            }
+        raise AssertionError(f"Unexpected tool: {name}")
+
+    async def _mock_rules(*_args, **_kwargs):
+        return "branch_creation:\n  automatic: true\n"
+
+    def _async_return(value):
+        async def _return(*_args, **_kwargs):
+            return value
+
+        return _return
+
+    async def _review_failure(*_args, **_kwargs):
+        raise RuntimeError("review LLM unavailable")
+
+    triage_agent = flexmock()
+    triage_agent.should_receive("run").replace_with(
+        _async_return(flexmock(last_message=flexmock(text=output.model_dump_json())))
+    )
+    applicability_agent = flexmock()
+    applicability_agent.should_receive("run").replace_with(
+        _async_return(flexmock(last_message=flexmock(text=applicability.model_dump_json())))
+    )
+    review_agent = flexmock()
+    if review is None:
+        review_agent.should_receive("run").replace_with(_review_failure)
+    else:
+        review_agent.should_receive("run").replace_with(
+            _async_return(flexmock(last_message=flexmock(text=review.model_dump_json())))
+        )
+
+    flexmock(t_agent).should_receive("mcp_tools").replace_with(_mock_mcp_tools)
+    monkeypatch.setattr(agent_tasks, "mcp_tools", _mock_mcp_tools)
+    flexmock(t_agent).should_receive("run_tool").replace_with(_mock_run_tool)
+    flexmock(agent_tasks).should_receive("run_tool").replace_with(_mock_rules)
+    monkeypatch.setattr(t_agent, "get_mock_local_tool_env", lambda *_: None)
+    monkeypatch.setattr(t_agent, "get_agent_execution_config", dict)
+    monkeypatch.setattr(t_agent, "render_template", lambda *_: "output format")
+    monkeypatch.setattr(t_agent, "render_prompt", _async_return("triage prompt"))
+    monkeypatch.setattr(t_agent, "load_rhel_config", _async_return({}))
+    monkeypatch.setattr(t_agent, "determine_target_branch", _async_return(("rhel-10.3", None)))
+    monkeypatch.setattr(t_agent, "is_older_zstream", _async_return(False))
+    prep_result = (None, None, True, None) if scenario == "no_sources" else (tmp_path, tmp_path, True, None)
+    monkeypatch.setattr(agent_tasks, "clone_and_prep_sources", _async_return(prep_result))
+    monkeypatch.setattr(t_agent, "create_applicability_agent", lambda *_: applicability_agent)
+    monkeypatch.setattr(t_agent, "create_adversarial_review_agent", lambda *_: review_agent)
+    monkeypatch.setattr(t_agent, "check_build_in_buildroot", _async_return(True))
+    monkeypatch.setattr(t_agent, "find_rebuild_siblings", _async_return(([], None)))
+    monkeypatch.setattr(agent_tasks, "get_jira_issue_metadata", _async_return(([], "New")))
+    monkeypatch.setattr(t_agent, "queue_siblings_for_triage", _async_return(0))
+
+    labels = []
+    comments = []
+    events = []
+
+    async def _record_labels(**kwargs):
+        labels.append(kwargs)
+
+    async def _record_comment(**kwargs):
+        comments.append(kwargs)
+        events.append("comment")
+
+    async def _record_status(*args, **kwargs):
+        events.append("status_change")
+
+    async def _metadata(jira_issue):
+        return [], "New"
+
+    monkeypatch.setattr(agent_tasks, "set_jira_labels", _record_labels)
+    monkeypatch.setattr(agent_tasks, "comment_in_jira", _record_comment)
+    monkeypatch.setattr(agent_tasks, "change_jira_status", _record_status)
+    monkeypatch.setattr(agent_tasks, "get_jira_issue_metadata", _metadata)
+
+    state = await run_workflow(
+        "RHEL-99999",
+        dry_run=dry_run,
+        triage_agent_factory=lambda *_: triage_agent,
+        auto_chain=False,
+    )
+
+    skipped = scenario in ("agent_error", "no_sources")
+    assert state.adversarial_review_skipped is skipped
+    assert state.adversarial_review == review
+    assert state.triage_result.confidence == applicability.confidence
+    if scenario != "no_sources":
+        assert state.jira_severity == "Low"
+
+    if scenario == "overturned":
+        assert state.triage_result.resolution == Resolution.CLARIFICATION_NEEDED
+        findings = state.triage_result.data.findings
+        assert "The vulnerable code is absent from the shipped tree." in findings
+        assert "Fix patch applies cleanly" in findings
+        assert "An independent adversarial review overturned" in findings
+    else:
+        assert state.triage_result.resolution == Resolution.NOT_AFFECTED
+
+    if dry_run:
+        assert not labels
+        assert not comments
+        return
+
+    assert len(comments) == 1
+    text = comments[0]["comment_text"]
+    assert "Adversarial Review" in text
+    if skipped:
+        assert "unavailable" in text
+        assert "not eligible for auto-close" in text
+    elif scenario == "upheld":
+        assert "upheld" in text
+        assert "independently re-verified" in text
+        assert "not eligible for auto-close" not in text
+    else:
+        assert scenario in text
+        assert "not eligible for auto-close" in text
+    if scenario == "overturned":
+        assert "The vulnerable code is absent from the shipped tree." in text
+        assert "Fix patch applies cleanly" in text
+
+    review_calls = [
+        call
+        for call in labels
+        if REVIEW_LABELS.intersection(call.get("labels_to_add", []))
+        or REVIEW_LABELS.intersection(call.get("labels_to_remove", []))
+    ]
+    assert len(review_calls) == 1
+    expected = f"ymir_review_{scenario}" if not skipped else None
+    assert review_calls[0]["labels_to_add"] == ([expected] if expected else [])
+    assert set(review_calls[0]["labels_to_remove"]) == REVIEW_LABELS - ({expected} if expected else set())
+
+    # Auto-close requires an upheld review, a real run and the platform flag.
+    should_close = scenario == "upheld" and not dry_run
+    autoclosed_calls = [
+        call for call in labels if JiraLabels.AUTOCLOSED.value in call.get("labels_to_add", [])
+    ]
+    assert len(autoclosed_calls) == (1 if should_close else 0)
+    assert events.count("status_change") == (1 if should_close else 0)
+    if should_close:
+        assert events == ["comment", "status_change"]
+
+
+@pytest.mark.asyncio
+async def test_llm_not_affected_without_applicability_check_marks_review_skipped(
+    _mock_env_vars, monkeypatch, tmp_path
+):
+    """An LLM-only not-affected conclusion has no source analysis to review;
+    the missing independent check must be visible and block auto-close.
+    """
+    monkeypatch.setenv("GIT_REPO_BASEPATH", str(tmp_path))
+    output = TriageOutputSchema(
+        resolution=Resolution.NOT_AFFECTED,
+        data=NotAffectedData(
+            jira_issue="RHEL-99999",
+            explanation="Component not shipped",
+            package="bash",
+            cve_id="CVE-2025-1234",
+        ),
+    )
+    eligibility = CVEEligibilityResult(
+        is_cve=True, eligibility=TriageEligibility.IMMEDIATELY, reason="Eligible"
+    )
+
+    @asynccontextmanager
+    async def _mock_mcp_tools(*_args, **_kwargs):
+        yield []
+
+    async def _mock_run_tool(name, **kwargs):
+        if name == "check_cve_triage_eligibility":
+            return eligibility.model_dump()
+        return {}
+
+    def _async_return(value):
+        async def _return(*_args, **_kwargs):
+            return value
+
+        return _return
+
+    triage_agent = flexmock()
+    triage_agent.should_receive("run").replace_with(
+        _async_return(flexmock(last_message=flexmock(text=output.model_dump_json())))
+    )
+    flexmock(t_agent).should_receive("mcp_tools").replace_with(_mock_mcp_tools)
+    monkeypatch.setattr(agent_tasks, "mcp_tools", _mock_mcp_tools)
+    flexmock(t_agent).should_receive("run_tool").replace_with(_mock_run_tool)
+    monkeypatch.setattr(t_agent, "get_mock_local_tool_env", lambda *_: None)
+    monkeypatch.setattr(t_agent, "get_agent_execution_config", dict)
+    monkeypatch.setattr(t_agent, "render_template", lambda *_: "output format")
+    monkeypatch.setattr(t_agent, "render_prompt", _async_return("triage prompt"))
+    monkeypatch.setattr(t_agent, "load_rhel_config", _async_return({}))
+    monkeypatch.setattr(agent_tasks, "get_jira_issue_metadata", _async_return(([], "New")))
+
+    comments = []
+
+    async def _record_comment(**kwargs):
+        comments.append(kwargs)
+
+    async def _ignore_labels(**kwargs):
+        pass
+
+    monkeypatch.setattr(agent_tasks, "comment_in_jira", _record_comment)
+    monkeypatch.setattr(agent_tasks, "set_jira_labels", _ignore_labels)
+
+    state = await run_workflow(
+        "RHEL-99999",
+        dry_run=False,
+        triage_agent_factory=lambda *_: triage_agent,
+        auto_chain=False,
+    )
+
+    assert state.triage_result.resolution == Resolution.NOT_AFFECTED
+    assert state.adversarial_review is None
+    assert state.adversarial_review_skipped is True
+    assert len(comments) == 1
+    assert "Adversarial Review" in comments[0]["comment_text"]
+    assert "not eligible for auto-close" in comments[0]["comment_text"]
 
 
 @pytest.mark.asyncio
@@ -1930,3 +2320,164 @@ async def test_is_rebase_sibling_fails_when_own_details_unreadable(monkeypatch, 
     state = TriageState(jira_issue="RHEL-200")
     with pytest.raises(RuntimeError, match="RHEL-200"):
         await _is_rebase_sibling(state, [], user_triggered=user_triggered)
+
+
+def _close_test_state(**overrides) -> TriageState:
+    payload = {
+        "jira_issue": "RHEL-99999",
+        "triage_result": TriageOutputSchema(
+            resolution=Resolution.NOT_AFFECTED,
+            confidence=ConfidenceAssessment(level="high", reason="Direct source inspection"),
+            data=NotAffectedData(
+                jira_issue="RHEL-99999",
+                explanation="The vulnerable code is absent.",
+                package="demo-pkg",
+            ),
+        ),
+        "adversarial_review": _review_result(ReviewVerdict.UPHELD),
+        "jira_severity": "Low",
+        "cve_eligibility_result": CVEEligibilityResult(
+            is_cve=True, eligibility=TriageEligibility.IMMEDIATELY, reason="Eligible"
+        ),
+    }
+    payload.update(overrides)
+    return TriageState(**payload)
+
+
+def _record_close_calls(monkeypatch) -> dict:
+    calls = {"status": [], "labels": [], "metadata": []}
+
+    async def _change_status(*args, **kwargs):
+        calls["status"].append((args, kwargs))
+
+    async def _set_labels(**kwargs):
+        calls["labels"].append(kwargs)
+
+    async def _metadata(jira_issue):
+        calls["metadata"].append(jira_issue)
+        return [], "New"
+
+    monkeypatch.setattr(agent_tasks, "change_jira_status", _change_status)
+    monkeypatch.setattr(agent_tasks, "set_jira_labels", _set_labels)
+    monkeypatch.setattr(agent_tasks, "get_jira_issue_metadata", _metadata)
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "expect_close"),
+    [
+        ({}, True),
+        ({"jira_severity": "Critical"}, False),
+        ({"jira_severity": "Important"}, False),
+        ({"jira_severity": None}, False),
+        ({"applicability_used_fallback": True}, False),
+        ({"adversarial_review": _review_result(ReviewVerdict.INCONCLUSIVE)}, False),
+        ({"adversarial_review": _review_result(ReviewVerdict.OVERTURNED)}, False),
+        ({"adversarial_review": None, "adversarial_review_skipped": True}, False),
+        (
+            {
+                "cve_eligibility_result": CVEEligibilityResult(
+                    is_cve=True,
+                    eligibility=TriageEligibility.IMMEDIATELY,
+                    reason="Eligible",
+                    pending_zstream_issues=["RHEL-1"],
+                )
+            },
+            False,
+        ),
+    ],
+)
+async def test_maybe_auto_close_gate(monkeypatch, overrides, expect_close):
+    monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
+    calls = _record_close_calls(monkeypatch)
+
+    await maybe_auto_close_not_affected(
+        _close_test_state(**overrides), [], comment_posted=True, dry_run=False, user_triggered=False
+    )
+
+    assert bool(calls["status"]) is expect_close
+    assert bool(calls["labels"]) is expect_close
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("env", "comment_posted", "dry_run", "expect_close"),
+    [
+        ({"JIRA_ALLOW_STATUS_CHANGES": "true"}, True, True, False),
+        ({}, True, False, False),
+        ({"JIRA_ALLOW_STATUS_CHANGES": "true"}, False, False, False),
+        ({"JIRA_ALLOW_STATUS_CHANGES": "true"}, True, False, True),
+    ],
+)
+async def test_maybe_auto_close_preconditions(monkeypatch, env, comment_posted, dry_run, expect_close):
+    monkeypatch.delenv("JIRA_ALLOW_STATUS_CHANGES", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    calls = _record_close_calls(monkeypatch)
+
+    await maybe_auto_close_not_affected(
+        _close_test_state(), [], comment_posted=comment_posted, dry_run=dry_run, user_triggered=False
+    )
+
+    assert bool(calls["status"]) is expect_close
+    assert bool(calls["metadata"]) is expect_close
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["Closed", "Done", "Release Pending"])
+async def test_maybe_auto_close_skips_when_status_changed(monkeypatch, status):
+    monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
+    calls = _record_close_calls(monkeypatch)
+
+    async def _metadata(jira_issue):
+        return [], status
+
+    monkeypatch.setattr(agent_tasks, "get_jira_issue_metadata", _metadata)
+
+    await maybe_auto_close_not_affected(
+        _close_test_state(), [], comment_posted=True, dry_run=False, user_triggered=False
+    )
+
+    assert not calls["status"]
+    assert not calls["labels"]
+
+
+@pytest.mark.asyncio
+async def test_maybe_auto_close_only_for_not_affected(monkeypatch):
+    monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
+    calls = _record_close_calls(monkeypatch)
+    state = _close_test_state(
+        triage_result=TriageOutputSchema(
+            resolution=Resolution.CLARIFICATION_NEEDED,
+            data=ClarificationNeededData(
+                findings="Both positions",
+                additional_info_needed="Maintainer decision",
+                jira_issue="RHEL-99999",
+            ),
+        )
+    )
+
+    await maybe_auto_close_not_affected(state, [], comment_posted=True, dry_run=False, user_triggered=False)
+
+    assert not calls["status"]
+    assert not calls["labels"]
+
+
+@pytest.mark.asyncio
+async def test_maybe_auto_close_transition_payload(monkeypatch):
+    monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
+    monkeypatch.setenv("JIRA_CLOSE_STATUS", "Closed")
+    monkeypatch.setenv("JIRA_CLOSE_RESOLUTION", "Not a Bug")
+    calls = _record_close_calls(monkeypatch)
+
+    await maybe_auto_close_not_affected(
+        _close_test_state(), [], comment_posted=True, dry_run=False, user_triggered=False
+    )
+
+    args, kwargs = calls["status"][0]
+    assert args == ("RHEL-99999",)
+    assert kwargs["status"] == "Closed"
+    assert kwargs["resolution"] == "Not a Bug"
+    assert calls["labels"][0]["labels_to_add"] == [JiraLabels.AUTOCLOSED.value]
+    assert calls["labels"][0]["critical"] is False

@@ -1587,6 +1587,10 @@ class ChangeJiraStatusToolInput(BaseModel):
     status: str = Field(
         description="New status to transition to (e.g. 'In Progress', 'Done', 'Closed')",
     )
+    resolution: str | None = Field(
+        default=None,
+        description="Optional resolution name to set with the transition (e.g. 'Not a Bug')",
+    )
 
 
 class ChangeJiraStatusTool(Tool[ChangeJiraStatusToolInput, ToolRunOptions, StringToolOutput]):
@@ -1611,6 +1615,7 @@ class ChangeJiraStatusTool(Tool[ChangeJiraStatusToolInput, ToolRunOptions, Strin
     ) -> StringToolOutput:
         issue_key = tool_input.issue_key
         status = tool_input.status
+        resolution = tool_input.resolution
         if os.getenv("DRY_RUN", "False").lower() == "true":
             return StringToolOutput(
                 result=f"Dry run, not changing status of {issue_key} "
@@ -1668,9 +1673,12 @@ class ChangeJiraStatusTool(Tool[ChangeJiraStatusToolInput, ToolRunOptions, Strin
                 issue_key=issue_key,
                 status=status,
             ):
+                transition_payload = {"transition": {"id": transition["id"]}}
+                if resolution:
+                    transition_payload["fields"] = {"resolution": {"name": resolution}}
                 async with session.post(
                     jira_url,
-                    json={"transition": {"id": transition["id"]}},
+                    json=transition_payload,
                     headers=headers,
                 ) as resp:
                     resp.raise_for_status()

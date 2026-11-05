@@ -395,6 +395,67 @@ async def test_change_jira_status(transitions, status, expected_transition_id):
 
 
 @pytest.mark.parametrize(
+    "resolution, expected_payload",
+    [
+        (None, {"transition": {"id": "31"}}),
+        (
+            "Not a Bug",
+            {
+                "transition": {"id": "31"},
+                "fields": {"resolution": {"name": "Not a Bug"}},
+            },
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_change_jira_status_sets_optional_resolution(resolution, expected_payload):
+    """Closing an issue can set its resolution in the same transition, without
+    changing the payload for callers that do not request one."""
+    # The autouse mocked_env fixture stubs os.getenv with strict expectations;
+    # pydantic's model rebuild also calls getenv("PYDANTIC_DISABLE_PLUGINS").
+    # A default replacement absorbs that call without disturbing the fixture's
+    # key-specific expectations.
+    flexmock(os).should_receive("getenv").replace_with(lambda key, default=None: default)
+    issue_key = "RHEL-12345"
+    transitions = [{"id": "31", "to": {"name": "Closed"}}]
+
+    @asynccontextmanager
+    async def get(url, params=None, headers=None):
+        if url.endswith(f"rest/api/3/issue/{issue_key}") and params and params.get("fields") == "status":
+
+            async def json():
+                return {"fields": {"status": {"name": "New"}}}
+
+            yield flexmock(status=200, json=json, raise_for_status=lambda: None)
+        elif url.endswith(f"rest/api/3/issue/{issue_key}/transitions"):
+
+            async def json():
+                return {"transitions": transitions}
+
+            yield flexmock(status=200, json=json, raise_for_status=lambda: None)
+        else:
+            raise AssertionError(f"Unexpected URL: {url}")
+
+    captured = {}
+
+    @asynccontextmanager
+    async def post(url, json, headers):
+        captured["payload"] = json
+        yield flexmock(raise_for_status=lambda: None)
+
+    flexmock(aiohttp.ClientSession).should_receive("get").replace_with(get)
+    flexmock(aiohttp.ClientSession).should_receive("post").replace_with(post)
+
+    tool_input = {"issue_key": issue_key, "status": "Closed"}
+    if resolution:
+        tool_input["resolution"] = resolution
+    result = (await ChangeJiraStatusTool().run(input=tool_input)).result
+
+    assert result.startswith("Successfully")
+    assert captured["payload"] == expected_payload
+
+
+@pytest.mark.parametrize(
     "labels_to_add, labels_to_remove, expected_update_payload",
     [
         (

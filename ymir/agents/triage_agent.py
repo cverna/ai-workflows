@@ -16,10 +16,16 @@ from beeai_framework.agents.requirement.requirements.conditional import (
 from beeai_framework.errors import FrameworkError
 from beeai_framework.memory import UnconstrainedMemory
 from beeai_framework.middleware.trajectory import GlobalTrajectoryMiddleware
+from beeai_framework.tools import Tool
 from beeai_framework.workflows import Workflow
 from pydantic import BaseModel, Field, ValidationError
 
 import ymir.agents.tasks as tasks
+from ymir.agents.adversarial_review_agent import (
+    build_adversarial_review_prompt,
+    create_adversarial_review_agent,
+)
+from ymir.agents.autoclose import AutoCloseEvaluationInput, evaluate_autoclose_decision
 from ymir.agents.cve_applicability_agent import build_applicability_prompt, create_applicability_agent
 from ymir.agents.observability import setup_observability
 from ymir.agents.reasoning_agent import ReasoningAgent
@@ -53,7 +59,9 @@ from ymir.common.logging_setup import configure_logging, current_jira_issue, get
 from ymir.common.mock_repos import get_mock_local_tool_env
 from ymir.common.models import (
     POSTPONED_RESOLUTIONS,
+    AdversarialReviewResult,
     AssessedApplicabilityResult,
+    AutoCloseBlocker,
     AutoProcessingMode,
     BackportData,
     ClarificationNeededData,
@@ -69,6 +77,7 @@ from ymir.common.models import (
     RebuildData,
     ReproducerInputSchema,
     Resolution,
+    ReviewVerdict,
     Task,
     TriageEligibility,
 )
@@ -81,6 +90,7 @@ from ymir.common.models import (
 from ymir.common.utils import (
     DOWNSTREAM_COMPONENT_CUSTOM_FIELD,
     FIXED_IN_BUILD_CUSTOM_FIELD,
+    SEVERITY_CUSTOM_FIELD,
     check_build_in_buildroot,
     extract_text_from_adf,
     get_latest_candidate_build,
@@ -192,13 +202,20 @@ _CONFIDENCE_TO_LABEL: dict[str, JiraLabels] = {
     "high": JiraLabels.APPLICABILITY_CONFIDENCE_HIGH,
 }
 
+_REVIEW_VERDICT_TO_LABEL: dict[ReviewVerdict, JiraLabels] = {
+    ReviewVerdict.UPHELD: JiraLabels.REVIEW_UPHELD,
+    ReviewVerdict.OVERTURNED: JiraLabels.REVIEW_OVERTURNED,
+    ReviewVerdict.INCONCLUSIVE: JiraLabels.REVIEW_INCONCLUSIVE,
+}
+
 
 def _terminal_ymir_labels(labels: list[str]) -> list[str]:
     """Return Ymir labels that mark this issue as already triaged.
 
     Trigger, coordination and assessment labels do not indicate completion: a
     rebase primary requeued after its siblings finish must still run, and a
-    confidence assessment must not look like a terminal outcome.
+    confidence or adversarial-review assessment must not look like a terminal
+    outcome.
     """
     non_terminal = {
         JiraLabels.TRIAGE_IN_PROGRESS.value,
@@ -211,6 +228,7 @@ def _terminal_ymir_labels(labels: list[str]) -> list[str]:
         JiraLabels.APPLICABILITY_CONFIDENCE_LOW.value,
         JiraLabels.APPLICABILITY_CONFIDENCE_MEDIUM.value,
         JiraLabels.APPLICABILITY_CONFIDENCE_HIGH.value,
+        *[label.value for label in _REVIEW_VERDICT_TO_LABEL.values()],
     }
     known = JiraLabels.all_labels()
     return [label for label in labels if label in known and label not in non_terminal]
@@ -634,6 +652,21 @@ class TriageState(BaseModel):
     applicability_unpacked_sources: Path | None = Field(default=None)
     applicability_used_fallback: bool = Field(default=False)
     applicability_check_skipped: bool = Field(default=False)
+    applicability_result: AssessedApplicabilityResult | None = Field(
+        default=None, description="The applicability conclusion the reviewer must challenge"
+    )
+    applicability_patch_files: list[str] = Field(
+        default_factory=list, description="Fetched fix patches available to the reviewer"
+    )
+    adversarial_review: AdversarialReviewResult | None = Field(
+        default=None, description="Independent adversarial review of a not-affected conclusion"
+    )
+    adversarial_review_skipped: bool = Field(
+        default=False, description="True when the review could not run; never implies approval"
+    )
+    jira_severity: str | None = Field(
+        default=None, description="Raw Jira severity value used by the auto-close gate"
+    )
     rebase_waiting_for_siblings: bool = Field(
         default=False,
         description=(
@@ -1217,6 +1250,11 @@ async def run_workflow(
                 Resolution.REBUILD,
             ]:
                 return "determine_target_branch"
+            if state.triage_result.resolution == Resolution.NOT_AFFECTED:
+                # No source-based applicability check ran, so there is nothing
+                # for the reviewer to inspect. Record the gap explicitly: an
+                # LLM-only conclusion never becomes auto-close eligible.
+                state.adversarial_review_skipped = True
             if state.triage_result.resolution in [
                 Resolution.CLARIFICATION_NEEDED,
                 Resolution.OPEN_ENDED_ANALYSIS,
@@ -1461,6 +1499,8 @@ async def run_workflow(
                 )
                 applicability = AssessedApplicabilityResult.model_validate_json(response.last_message.text)
                 state.triage_result.confidence = applicability.confidence
+                state.applicability_result = applicability
+                state.applicability_patch_files = patch_files
 
                 if not applicability.is_affected:
                     logger.info(
@@ -1493,7 +1533,7 @@ async def run_workflow(
                             patch_urls=getattr(prior, "patch_urls", None),
                         ),
                     )
-                    return "comment_in_jira"
+                    return "adversarial_review"
 
                 logger.info(
                     f"CVE confirmed applicable for {state.jira_issue}: {applicability.explanation[:100]}"
@@ -1506,6 +1546,113 @@ async def run_workflow(
                 return "verify_rebuild_buildroot"
             if state.triage_result.resolution == Resolution.REBASE:
                 return "consolidate_rebase_siblings"
+            return "comment_in_jira"
+
+        async def adversarial_review(state):
+            """Challenge a not-affected conclusion with an independent reviewer.
+
+            Fail-safe: any failure to run or parse the review leaves
+            `adversarial_review` unset, which blocks auto-close (NO_REVIEW).
+            """
+            if state.triage_result.resolution != Resolution.NOT_AFFECTED:
+                return "comment_in_jira"
+
+            applicability = state.applicability_result
+            unpacked_sources = state.applicability_unpacked_sources
+            local_clone = state.applicability_local_clone
+            if applicability is None or unpacked_sources is None or local_clone is None:
+                logger.warning(
+                    f"Adversarial review skipped for {state.jira_issue}: "
+                    "applicability result or prepared sources unavailable"
+                )
+                state.adversarial_review_skipped = True
+                return "comment_in_jira"
+
+            data = state.triage_result.data
+            review_tool_options: dict = {"working_directory": local_clone}
+            if mock_env:
+                review_tool_options["env"] = mock_env
+
+            # Severity gates auto-close; a failed lookup leaves it unset and
+            # the gate blocks with SEVERITY rather than guessing.
+            try:
+                details = await run_tool(
+                    "get_jira_details",
+                    issue_key=state.jira_issue,
+                    available_tools=gateway_tools,
+                )
+                severity_field = details.get("fields", {}).get(SEVERITY_CUSTOM_FIELD, {})
+                state.jira_severity = (
+                    severity_field.get("value") if isinstance(severity_field, dict) else None
+                )
+            except Exception as e:
+                logger.warning(f"Could not read Jira severity for {state.jira_issue}: {e}")
+
+            try:
+                review_agent = create_adversarial_review_agent(gateway_tools, review_tool_options)
+                prompt = build_adversarial_review_prompt(
+                    jira_issue=state.jira_issue,
+                    package=getattr(data, "package", None) or "",
+                    target_branch=state.target_branch or "",
+                    cve_id=getattr(data, "cve_id", None),
+                    applicability=applicability,
+                    unpacked_sources=unpacked_sources,
+                    patch_files=state.applicability_patch_files,
+                    prep_ok=not state.applicability_used_fallback,
+                    pending_zstream_issues=(
+                        state.cve_eligibility_result.pending_zstream_issues
+                        if state.cve_eligibility_result
+                        else None
+                    ),
+                )
+                response = await review_agent.run(
+                    prompt,
+                    expected_output=AdversarialReviewResult,
+                    **get_agent_execution_config(),
+                )
+                review = AdversarialReviewResult.model_validate_json(response.last_message.text)
+            except Exception as e:
+                logger.warning(f"Adversarial review failed for {state.jira_issue}: {e}")
+                state.adversarial_review_skipped = True
+                return "comment_in_jira"
+
+            state.adversarial_review = review
+            logger.info(
+                f"Adversarial review for {state.jira_issue}: "
+                f"verdict={review.verdict.value}, "
+                f"conclusion={review.independent_conclusion}"
+            )
+
+            if review.verdict == ReviewVerdict.OVERTURNED:
+                # Two agents disagreeing is human territory: never flip to
+                # affected automatically, and never close. Show both positions.
+                refuted_claims = [
+                    f"{check.claim}: {check.evidence}"
+                    for check in review.claim_checks
+                    if check.status == "refuted"
+                ]
+                findings = (
+                    "The applicability agent concluded this package is not affected "
+                    f"({data.justification_category or 'unspecified'}):\n"
+                    f"{data.explanation}\n\n"
+                    "An independent adversarial review overturned that conclusion "
+                    f"(independent conclusion: {review.independent_conclusion}).\n"
+                    f"Counter-evidence: {review.counter_evidence or 'see the refuted claims below'}.\n"
+                )
+                if refuted_claims:
+                    findings += "Refuted claims:\n" + "\n".join(f"- {claim}" for claim in refuted_claims)
+                state.triage_result = OutputSchema(
+                    resolution=Resolution.CLARIFICATION_NEEDED,
+                    confidence=state.triage_result.confidence,
+                    data=ClarificationNeededData(
+                        findings=findings,
+                        additional_info_needed=(
+                            "A maintainer must decide whether the package is affected and "
+                            "which downstream action to take; Ymir will not close this issue."
+                        ),
+                        jira_issue=state.jira_issue,
+                    ),
+                )
             return "comment_in_jira"
 
         async def verify_rebuild_buildroot(state):
@@ -1653,34 +1800,56 @@ async def run_workflow(
                 comment_text += (
                     "\n\n_Note: CVE applicability check could not be performed (source preparation failed)._"
                 )
+            comment_text += render_adversarial_review_result(
+                state.adversarial_review, state.adversarial_review_skipped
+            )
             if state.hold_for_manual_branch_creation:
                 comment_text += "\n\n---\n" + tasks.manual_branch_creation_comment(
                     state.triage_result.data.package, state.target_branch, state.jira_issue
                 )
             logger.info(f"Result to be put in Jira comment: {comment_text}")
+            should_post_comment = _should_update_jira(
+                resolution=state.triage_result.resolution,
+                user_triggered=user_triggered,
+                requires_manual_branch_creation=state.hold_for_manual_branch_creation,
+                triage_only=state.triage_only,
+            )
+
             if dry_run:
+                # Evaluate the gate exactly as a real run would: the only
+                # reason the comment is missing here is DRY_RUN, so treat it
+                # as posted for the hypothetical decision. No Jira writes.
+                await maybe_auto_close_not_affected(
+                    state,
+                    gateway_tools,
+                    comment_posted=should_post_comment,
+                    dry_run=True,
+                    user_triggered=user_triggered,
+                )
                 return Workflow.END
+
             await label_applicability_confidence(
                 state.jira_issue,
                 state.triage_result.confidence,
                 dry_run=dry_run,
                 user_triggered=user_triggered,
             )
-            if not _should_update_jira(
-                resolution=state.triage_result.resolution,
+            await label_adversarial_review(
+                state.jira_issue,
+                state.adversarial_review,
+                dry_run=dry_run,
                 user_triggered=user_triggered,
-                requires_manual_branch_creation=state.hold_for_manual_branch_creation,
-                triage_only=state.triage_only,
-            ):
+            )
+            comment_posted = False
+            if not should_post_comment:
                 logger.info(
                     f"Skipping Jira comment for {state.jira_issue} "
                     f"(resolution={state.triage_result.resolution.value}, not user-triggered)"
                 )
-                return Workflow.END
             # skip re-posting a comment when this issue already carries
             # a Ymir comment for the same postponement resolution.
             # User-triggered runs always get fresh confirmation, so they bypass this guard.
-            if (
+            elif (
                 not user_triggered
                 and state.triage_result.resolution in POSTPONED_RESOLUTIONS
                 and await _postponed_comment_exists(
@@ -1693,29 +1862,38 @@ async def run_workflow(
                     state.jira_issue,
                     state.triage_result.resolution.value,
                 )
-                return Workflow.END
-            if state.hold_for_manual_branch_creation:
-                siblings = getattr(state.triage_result.data, "consolidated_issues", [])
-                await tasks.handle_manual_branch_creation_required(
-                    tasks.ManualBranchCreationRequired(
-                        state.triage_result.data.package,
-                        state.target_branch,
-                        [state.jira_issue, *[issue.issue_key for issue in siblings]],
-                    ),
-                    agent_type="Triage",
-                    triaged_label=_resolution_label(state.triage_result.resolution, state.triage_only).value,
-                    dry_run=dry_run,
-                    user_triggered=user_triggered,
-                    primary_comment=comment_text,
-                )
             else:
-                await tasks.comment_in_jira(
-                    jira_issue=state.jira_issue,
-                    agent_type="Triage",
-                    comment_text=comment_text,
-                    available_tools=gateway_tools,
-                    user_triggered=user_triggered,
-                )
+                if state.hold_for_manual_branch_creation:
+                    siblings = getattr(state.triage_result.data, "consolidated_issues", [])
+                    await tasks.handle_manual_branch_creation_required(
+                        tasks.ManualBranchCreationRequired(
+                            state.triage_result.data.package,
+                            state.target_branch,
+                            [state.jira_issue, *[issue.issue_key for issue in siblings]],
+                        ),
+                        agent_type="Triage",
+                        triaged_label=_resolution_label(state.triage_result.resolution, state.triage_only).value,
+                        dry_run=dry_run,
+                        user_triggered=user_triggered,
+                        primary_comment=comment_text,
+                    )
+                else:
+                    await tasks.comment_in_jira(
+                        jira_issue=state.jira_issue,
+                        agent_type="Triage",
+                        comment_text=comment_text,
+                        available_tools=gateway_tools,
+                        user_triggered=user_triggered,
+                    )
+                comment_posted = True
+
+            await maybe_auto_close_not_affected(
+                state,
+                gateway_tools,
+                comment_posted=comment_posted,
+                dry_run=False,
+                user_triggered=user_triggered,
+            )
             return Workflow.END
 
         workflow.add_step("check_cve_eligibility", check_cve_eligibility)
@@ -1723,6 +1901,7 @@ async def run_workflow(
         workflow.add_step("verify_rebase_author", verify_rebase_author)
         workflow.add_step("determine_target_branch", determine_target_branch_step)
         workflow.add_step("check_cve_applicability", check_cve_applicability)
+        workflow.add_step("adversarial_review", adversarial_review)
         workflow.add_step("verify_rebuild_buildroot", verify_rebuild_buildroot)
         workflow.add_step("consolidate_rebuild_siblings", consolidate_rebuild_siblings)
         workflow.add_step("consolidate_rebase_siblings", consolidate_rebase_siblings)
@@ -1743,6 +1922,161 @@ async def run_workflow(
             if response is not None:
                 response.state.applicability_local_clone = None
                 response.state.applicability_unpacked_sources = None
+
+
+# A human or another workflow already moved the issue past triage; closing
+# from one of these would be wrong (and double-closing is never idempotent
+# from Ymir's point of view).
+_NON_CLOSABLE_JIRA_STATUSES = frozenset(
+    {
+        IssueStatus.CLOSED.value,
+        IssueStatus.DONE.value,
+        IssueStatus.RELEASE_PENDING.value,
+    }
+)
+
+
+async def maybe_auto_close_not_affected(
+    state: TriageState,
+    gateway_tools: list[Tool],
+    comment_posted: bool,
+    dry_run: bool,
+    user_triggered: bool,
+) -> None:
+    """Evaluate the deterministic gate and close an eligible issue.
+
+    Comment first, close second: this is only called after the justification
+    comment was (or would have been) posted. DRY_RUN evaluates and logs the
+    decision with no Jira writes. A blocked decision is logged with its named
+    blockers so every non-close is explainable after the fact.
+    """
+    if state.triage_result.resolution != Resolution.NOT_AFFECTED:
+        return
+
+    close_status = os.getenv("JIRA_CLOSE_STATUS", "Closed")
+    close_resolution = os.getenv("JIRA_CLOSE_RESOLUTION", "Not a Bug")
+    status_changes_enabled = os.getenv("JIRA_ALLOW_STATUS_CHANGES", "false").lower() == "true"
+
+    decision = evaluate_autoclose_decision(
+        AutoCloseEvaluationInput(
+            review=state.adversarial_review,
+            applicability_confidence=state.triage_result.confidence,
+            used_fallback_sources=state.applicability_used_fallback,
+            severity=state.jira_severity,
+            package=getattr(state.triage_result.data, "package", None) or "",
+            pending_zstream_issues=(
+                state.cve_eligibility_result.pending_zstream_issues or []
+                if state.cve_eligibility_result
+                else []
+            ),
+            # A blocking duplicate makes the issue ineligible for triage, so
+            # an open duplicate cannot reach this point by construction.
+            open_duplicate=None,
+            comment_posted=comment_posted,
+            status_changes_enabled=status_changes_enabled,
+        )
+    )
+    if not decision.eligible:
+        logger.info(
+            "Auto-close blocked for %s: %s",
+            state.jira_issue,
+            ", ".join(blocker.value for blocker in decision.blockers),
+        )
+        return
+
+    if dry_run:
+        logger.info(
+            "DRY RUN: would auto-close %s to %s with resolution %s",
+            state.jira_issue,
+            close_status,
+            close_resolution,
+        )
+        return
+
+    # Runtime re-check for races: a human may have moved the issue while the
+    # review was running. The gate itself never emits STATE_CHANGED.
+    _, current_status = await tasks.get_jira_issue_metadata(state.jira_issue)
+    if current_status in _NON_CLOSABLE_JIRA_STATUSES:
+        logger.info(
+            "Skipping auto-close for %s: %s (%s)",
+            state.jira_issue,
+            AutoCloseBlocker.STATE_CHANGED.value,
+            current_status,
+        )
+        return
+
+    await tasks.change_jira_status(
+        state.jira_issue,
+        status=close_status,
+        available_tools=gateway_tools,
+        resolution=close_resolution,
+    )
+    await tasks.set_jira_labels(
+        jira_issue=state.jira_issue,
+        labels_to_add=[JiraLabels.AUTOCLOSED.value],
+        labels_to_remove=[],
+        dry_run=dry_run,
+        user_triggered=user_triggered,
+        critical=False,
+    )
+    logger.info("Auto-closed %s to %s with resolution %s", state.jira_issue, close_status, close_resolution)
+
+
+def render_adversarial_review_result(
+    review: AdversarialReviewResult | None,
+    skipped: bool,
+) -> str:
+    """Render the review outcome as a Jira comment section.
+
+    Returns an empty string for resolutions that never ran a review. A
+    skipped or failed review is reported explicitly so the absence of an
+    independent check never looks like approval.
+    """
+    if review is None:
+        if skipped:
+            return (
+                "\n\n*Adversarial Review*: unavailable — the independent check could "
+                "not be completed. This issue is not eligible for auto-close."
+            )
+        return ""
+
+    verified = sum(1 for check in review.claim_checks if check.status == "verified")
+    refuted = sum(1 for check in review.claim_checks if check.status == "refuted")
+    lines = [
+        f"\n\n*Adversarial Review*: {review.verdict.value}",
+        f"*Independent Conclusion*: {review.independent_conclusion}",
+        f"*Claims Re-checked*: {len(review.claim_checks)} ({verified} verified, {refuted} refuted)",
+        f"*Review Confidence*: {review.confidence.level} — {review.confidence.reason}",
+    ]
+    if review.counter_evidence:
+        lines.append(f"*Counter-evidence*: {review.counter_evidence}")
+    if review.verdict == ReviewVerdict.UPHELD:
+        lines.append("The not-affected conclusion was independently re-verified.")
+    else:
+        lines.append("This issue is not eligible for auto-close.")
+    return "\n".join(lines)
+
+
+async def label_adversarial_review(
+    jira_issue: str,
+    review: AdversarialReviewResult | None,
+    dry_run: bool,
+    user_triggered: bool,
+) -> None:
+    """Replace the current review-outcome label without affecting triage routing."""
+    if dry_run:
+        return
+    selected = _REVIEW_VERDICT_TO_LABEL[review.verdict].value if review else None
+    await tasks.set_jira_labels(
+        jira_issue=jira_issue,
+        labels_to_add=[selected] if selected else [],
+        labels_to_remove=[
+            label.value for label in _REVIEW_VERDICT_TO_LABEL.values() if label.value != selected
+        ],
+        dry_run=dry_run,
+        user_triggered=user_triggered,
+        critical=False,
+    )
 
 
 async def label_applicability_confidence(
