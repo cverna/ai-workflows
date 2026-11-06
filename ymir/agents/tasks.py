@@ -1638,10 +1638,44 @@ def get_unpacked_sources(local_clone: Path, package: str, builddir: Path | None 
     raise ValueError(f"Unpacked source directory does not exist: {sources_dir}")
 
 
+async def _extract_extra_sources(
+    local_clone: Path,
+    extra_source_filenames: list[str],
+    destination: Path,
+) -> None:
+    """Extract non-primary Source* archives into the Source0 tree (best effort).
+
+    RPM %prep commonly unpacks vendor/bundled dependency tarballs (Source1,
+    Source2, ...) into the source root. When prep fails we still want those
+    build inputs in the analysis tree: without them the applicability agent
+    sees an incomplete tree and can wrongly conclude "Component not Present".
+    Failures are logged and skipped; they never abort the fallback.
+    """
+    for filename in extra_source_filenames:
+        archive = local_clone / filename
+        if not archive.is_file():
+            logger.warning("Extra source %s is not on disk; skipping extraction", filename)
+            continue
+        exit_code, _, stderr = await run_subprocess(
+            ["/usr/lib/rpm/rpmuncompress", "-x", str(archive)], cwd=destination
+        )
+        if exit_code != 0:
+            logger.warning(
+                "Could not extract extra source %s into %s: %s",
+                filename,
+                destination,
+                (stderr or "").strip()[:300],
+            )
+            continue
+        logger.info("Extracted extra source %s into %s", filename, destination)
+
+
 async def _fallback_extract_sources(local_clone: Path, package: str) -> tuple[Path, str]:
     """
     Fallback when centpkg/rhpkg prep fails: extract the primary source
-    archive using Source0 from the spec file.
+    archive using Source0 from the spec file, then unpack any additional
+    Source* archives (vendor/bundled tarballs) into the same tree so the
+    analysis sees the package's real build inputs.
     Returns (unpacked_sources, extract_dir) where extract_dir is a /tmp
     path the caller must clean up.
     """
@@ -1650,9 +1684,11 @@ async def _fallback_extract_sources(local_clone: Path, package: str) -> tuple[Pa
         with Specfile(local_clone / spec_name) as spec:
             if not (sources := get_all_sources(spec)):
                 raise ValueError(f"No sources defined in {spec_name}")
-            archive = local_clone / sources[0].expanded_filename
+            primary = next(iter(sources))
+            archive = local_clone / primary.expanded_filename
             if not archive.is_file():
-                raise ValueError(f"Source0 '{sources[0].expanded_filename}' not found on disk")
+                raise ValueError(f"Source0 '{primary.expanded_filename}' not found on disk")
+            extra_sources = [source.expanded_filename for source in list(sources)[1:]]
     except Exception as e:
         raise ValueError(f"Could not determine source archive for {package}: {e}") from e
     logger.info(f"Using Source0 from spec: {archive.name}")
@@ -1670,9 +1706,10 @@ async def _fallback_extract_sources(local_clone: Path, package: str) -> tuple[Pa
     except BaseException:
         shutil.rmtree(extract_dir, ignore_errors=True)
         raise
-    if len(subdirs) == 1:
-        return subdirs[0], str(extract_dir)
-    return extract_dir, str(extract_dir)
+    source_root = subdirs[0] if len(subdirs) == 1 else extract_dir
+    if extra_sources:
+        await _extract_extra_sources(local_clone, extra_sources, source_root)
+    return source_root, str(extract_dir)
 
 
 async def clone_and_prep_sources(

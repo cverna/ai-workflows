@@ -1,5 +1,7 @@
+import shutil
 import subprocess
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -2134,3 +2136,96 @@ async def test_fetch_auto_processing_config_fails_open_on_malformed_config(yaml_
     config = await fetch_auto_processing_config("bash", [])
 
     assert config.mode is AutoProcessingMode.FULL
+
+
+@pytest.mark.asyncio
+async def test_extract_extra_sources_unpacks_into_source_root(monkeypatch, tmp_path):
+    """Vendor/bundled tarballs (Source1+) must be unpacked into the Source0 tree."""
+    archive = tmp_path / "demo-vendor.tar.gz"
+    archive.write_bytes(b"")
+    calls = []
+
+    async def _run(cmd, cwd=None, **_kwargs):
+        calls.append((cmd, cwd))
+        return 0, "", ""
+
+    monkeypatch.setattr(agent_tasks, "run_subprocess", _run)
+    source_root = tmp_path / "demo-1.0"
+    source_root.mkdir()
+
+    await agent_tasks._extract_extra_sources(tmp_path, ["demo-vendor.tar.gz", "missing.tar.gz"], source_root)
+
+    assert calls == [(["/usr/lib/rpm/rpmuncompress", "-x", str(archive)], source_root)]
+
+
+@pytest.mark.asyncio
+async def test_extract_extra_sources_continues_after_failure(monkeypatch, tmp_path):
+    for name in ("a.tar.gz", "b.tar.gz"):
+        (tmp_path / name).write_bytes(b"")
+    calls = []
+
+    async def _run(cmd, cwd=None, **_kwargs):
+        calls.append(cmd)
+        return (1, "", "not an archive") if cmd[-1].endswith("a.tar.gz") else (0, "", "")
+
+    monkeypatch.setattr(agent_tasks, "run_subprocess", _run)
+    source_root = tmp_path / "demo-1.0"
+    source_root.mkdir()
+
+    await agent_tasks._extract_extra_sources(tmp_path, ["a.tar.gz", "b.tar.gz"], source_root)
+
+    assert len(calls) == 2  # a failure does not stop the next archive
+
+
+@pytest.mark.asyncio
+async def test_fallback_extract_sources_unpacks_declared_extra_sources(monkeypatch, tmp_path):
+    """A prep fallback must include Source1+ in the analysis tree, not just Source0."""
+    (tmp_path / "demo.spec").write_text(
+        "\n".join(
+            [
+                "Name: demo",
+                "Version: 1.0",
+                "Release: 1%{?dist}",
+                "Summary: demo",
+                "License: MIT",
+                "Source0: demo-1.0.tar.gz",
+                "Source1: demo-vendor.tar.gz",
+                "BuildArch: noarch",
+                "%description",
+                "demo",
+                "%prep",
+                "%setup -q",
+                "%build",
+                "%install",
+                "%files",
+                "%changelog",
+                "* Wed Nov 05 2026 Test <t@example.com> - 1.0-1",
+                "- init",
+                "",
+            ]
+        )
+    )
+    (tmp_path / "demo-1.0.tar.gz").write_bytes(b"")
+    (tmp_path / "demo-vendor.tar.gz").write_bytes(b"")
+
+    async def _run(cmd, cwd=None, **_kwargs):
+        # Simulate Source0 extraction: one top-level directory.
+        (Path(cwd) / "demo-1.0").mkdir()
+        return 0, "", ""
+
+    monkeypatch.setattr(agent_tasks, "run_subprocess", _run)
+    captured = {}
+
+    async def _extract(local_clone, extra, destination):
+        captured["extra"] = extra
+        captured["destination"] = destination
+
+    monkeypatch.setattr(agent_tasks, "_extract_extra_sources", _extract)
+
+    unpacked, extract_dir = await agent_tasks._fallback_extract_sources(tmp_path, "demo")
+
+    try:
+        assert unpacked == Path(extract_dir) / "demo-1.0"
+        assert captured == {"extra": ["demo-vendor.tar.gz"], "destination": unpacked}
+    finally:
+        shutil.rmtree(extract_dir, ignore_errors=True)

@@ -60,6 +60,13 @@ already on disk (`state.applicability_local_clone`,
 tree the applicability agent analyzed — no re-clone, and the conclusion is
 challenged before anything reaches Jira.
 
+CVE resolutions that would otherwise bypass the applicability check are
+routed through it. In particular, a CVE that triage could not resolve
+(`clarification-needed`) is checked against the shipped source first: if the
+package is not affected, the result becomes `not-affected` and reaches the
+reviewer and gate instead of stalling in clarification. Non-CVE issues keep
+the direct path.
+
 ```
 ┌───────────────────┐   not-affected        ┌──────────────────────────┐
 │ check_cve_        │──────────────────────▶│ adversarial_review       │
@@ -140,7 +147,9 @@ category, explanation, confidence and reason) and must work in two phases:
 2. **ATTACK** — actively hunt refuting evidence along the applicability
    agent's known failure modes (the prompt's attack menu):
    - prep failed → unpatched Source0: do the **downstream dist-git patches**
-     already fix the vulnerable code?
+     already fix the vulnerable code? Do the declared `Source*` vendor/bundled
+     archives (extracted into the tree on fallback) actually contain the
+     component?
    - source-level "component not present" vs **binary RPM subpackages** that
      do ship the component (`rpmspec`/subpackage definitions)
    - **vendored/bundled copies** in non-obvious paths (`find`, not manifests)

@@ -61,7 +61,11 @@ from ymir.common.models import (
     TriageInputSchema,
     TriageOutputSchema,
 )
-from ymir.common.utils import FIXED_IN_BUILD_CUSTOM_FIELD, SEVERITY_CUSTOM_FIELD
+from ymir.common.utils import (
+    DOWNSTREAM_COMPONENT_CUSTOM_FIELD,
+    FIXED_IN_BUILD_CUSTOM_FIELD,
+    SEVERITY_CUSTOM_FIELD,
+)
 from ymir.common.version_utils import extract_downstream_package, is_modular, parse_module_stream
 
 
@@ -1051,6 +1055,40 @@ async def test_determine_target_branch_non_modular_has_no_explicit_namespace():
 
 
 @pytest.mark.asyncio
+async def test_determine_target_branch_uses_explicit_fallbacks():
+    """clarification-needed data carries no fix_version/package; the step's
+    fallbacks must still resolve a branch so applicability can run."""
+    data = ClarificationNeededData(
+        findings="No fix identified", additional_info_needed="Dependency tracker", jira_issue="RHEL-1"
+    )
+
+    async def _mock_version_to_branch(*_args, **_kwargs):
+        return "c10s"
+
+    flexmock(t_agent).should_receive("_map_version_to_branch").replace_with(_mock_version_to_branch)
+
+    branch, namespace = await determine_target_branch(
+        _cve_eligibility(needs_internal_fix=False),
+        data,
+        jira_summary="CVE-2026-1 pkg: something [rhel-10.4]",
+        downstream_component="pkg",
+        fix_version="rhel-10.4",
+        package="pkg",
+    )
+    assert branch == "c10s"
+    assert namespace is None
+
+
+@pytest.mark.asyncio
+async def test_determine_target_branch_without_any_fix_version_returns_none():
+    data = ClarificationNeededData(
+        findings="No fix identified", additional_info_needed="Dependency tracker", jira_issue="RHEL-1"
+    )
+    branch, namespace = await determine_target_branch(_cve_eligibility(needs_internal_fix=False), data)
+    assert (branch, namespace) == (None, None)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("branch", "available_branches", "expected"),
     [
@@ -1743,6 +1781,129 @@ async def test_adversarial_review_workflow(scenario, dry_run, _mock_env_vars, mo
     assert events.count("status_change") == (1 if should_close else 0)
     if should_close:
         assert events == ["comment", "status_change"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("is_cve", "is_affected", "expected_resolution"),
+    [
+        (True, False, Resolution.NOT_AFFECTED),
+        (True, True, Resolution.CLARIFICATION_NEEDED),
+        (False, False, Resolution.CLARIFICATION_NEEDED),
+    ],
+)
+async def test_cve_clarification_routes_through_applicability(
+    is_cve, is_affected, expected_resolution, _mock_env_vars, monkeypatch, tmp_path
+):
+    """A CVE the LLM could not resolve still gets a source-based check, so a
+    prior not-affected assessment is re-validated. Non-CVEs keep the direct path."""
+    monkeypatch.setenv("GIT_REPO_BASEPATH", str(tmp_path))
+    output = TriageOutputSchema(
+        resolution=Resolution.CLARIFICATION_NEEDED,
+        data=ClarificationNeededData(
+            findings="Could not identify a fixing release",
+            additional_info_needed="A dependency tracker with a Fixed in Build",
+            jira_issue="RHEL-99999",
+        ),
+    )
+    eligibility = CVEEligibilityResult(
+        is_cve=is_cve, eligibility=TriageEligibility.IMMEDIATELY, reason="Eligible"
+    )
+    applicability = AssessedApplicabilityResult(
+        is_affected=is_affected,
+        justification_category=None if is_affected else "Vulnerable Code not Present",
+        explanation="Source analysis result",
+        confidence=ConfidenceAssessment(level="high", reason="Direct source inspection"),
+    )
+    review = _review_result(ReviewVerdict.UPHELD)
+
+    @asynccontextmanager
+    async def _mock_mcp_tools(*_args, **_kwargs):
+        yield []
+
+    async def _mock_run_tool(name, **kwargs):
+        if name == "check_cve_triage_eligibility":
+            return eligibility.model_dump()
+        if name == "get_jira_details":
+            return {
+                "fields": {
+                    "summary": "CVE-2026-12345 pkg: something [rhel-10.4]",
+                    "fixVersions": [{"name": "rhel-10.4"}],
+                    DOWNSTREAM_COMPONENT_CUSTOM_FIELD: "pkg",
+                    SEVERITY_CUSTOM_FIELD: {"value": "Moderate"},
+                }
+            }
+        if name == "get_internal_rhel_branches":
+            return []
+        raise AssertionError(f"Unexpected tool: {name}")
+
+    async def _mock_rules(*_args, **_kwargs):
+        return ""
+
+    def _async_return(value):
+        async def _return(*_args, **_kwargs):
+            return value
+
+        return _return
+
+    triage_agent = flexmock()
+    triage_agent.should_receive("run").replace_with(
+        _async_return(flexmock(last_message=flexmock(text=output.model_dump_json())))
+    )
+    applicability_agent = flexmock()
+    applicability_agent.should_receive("run").replace_with(
+        _async_return(flexmock(last_message=flexmock(text=applicability.model_dump_json())))
+    )
+    review_agent = flexmock()
+    review_agent.should_receive("run").replace_with(
+        _async_return(flexmock(last_message=flexmock(text=review.model_dump_json())))
+    )
+
+    flexmock(t_agent).should_receive("mcp_tools").replace_with(_mock_mcp_tools)
+    monkeypatch.setattr(agent_tasks, "mcp_tools", _mock_mcp_tools)
+    flexmock(t_agent).should_receive("run_tool").replace_with(_mock_run_tool)
+    flexmock(agent_tasks).should_receive("run_tool").replace_with(_mock_rules)
+    monkeypatch.setattr(t_agent, "get_mock_local_tool_env", lambda *_: None)
+    monkeypatch.setattr(t_agent, "get_agent_execution_config", dict)
+    monkeypatch.setattr(t_agent, "render_template", lambda *_: "output format")
+    monkeypatch.setattr(t_agent, "render_prompt", _async_return("triage prompt"))
+    monkeypatch.setattr(t_agent, "load_rhel_config", _async_return({}))
+    monkeypatch.setattr(t_agent, "determine_target_branch", _async_return(("c10s", None)))
+    monkeypatch.setattr(t_agent, "is_older_zstream", _async_return(False))
+    monkeypatch.setattr(
+        agent_tasks, "clone_and_prep_sources", _async_return((tmp_path, tmp_path, True, None))
+    )
+    monkeypatch.setattr(t_agent, "create_applicability_agent", lambda *_: applicability_agent)
+    monkeypatch.setattr(t_agent, "create_adversarial_review_agent", lambda *_: review_agent)
+    monkeypatch.setattr(agent_tasks, "get_jira_issue_metadata", _async_return(([], "New")))
+
+    comments = []
+
+    async def _record_comment(**kwargs):
+        comments.append(kwargs)
+
+    async def _ignore_labels(**kwargs):
+        pass
+
+    monkeypatch.setattr(agent_tasks, "comment_in_jira", _record_comment)
+    monkeypatch.setattr(agent_tasks, "set_jira_labels", _ignore_labels)
+
+    state = await run_workflow(
+        "RHEL-99999",
+        dry_run=False,
+        triage_agent_factory=lambda *_: triage_agent,
+        auto_chain=False,
+    )
+
+    assert state.triage_result.resolution == expected_resolution
+    if is_cve and not is_affected:
+        assert state.adversarial_review is not None
+        assert state.triage_result.data.package == "pkg"
+        assert state.triage_result.data.cve_id == "CVE-2026-12345"
+        assert state.triage_result.data.fix_version == "rhel-10.4"
+    else:
+        assert state.adversarial_review is None
+    assert len(comments) == 1
 
 
 @pytest.mark.asyncio

@@ -441,10 +441,16 @@ async def determine_target_branch(
     triage_data: BaseModel,
     jira_summary: str | None = None,
     downstream_component: str | None = None,
+    fix_version: str | None = None,
+    package: str | None = None,
 ) -> tuple[str | None, str | None]:
     """
     Determine target branch and optional GitLab namespace from fix_version
     and CVE eligibility.
+
+    ``fix_version`` and ``package`` are fallbacks for resolution data that
+    carries neither (e.g. clarification-needed), so a CVE can still be routed
+    through the source-based applicability check.
 
     Returns:
         ``(branch, dist_git_namespace)``. *dist_git_namespace* is set for
@@ -452,7 +458,8 @@ async def determine_target_branch(
         name alone cannot select the forge project; otherwise ``None`` and
         callers fall back to ``is_cs_branch`` heuristics.
     """
-    if not (hasattr(triage_data, "fix_version") and triage_data.fix_version):
+    resolved_fix_version = getattr(triage_data, "fix_version", None) or fix_version
+    if not resolved_fix_version:
         logger.warning("No fix_version available for branch mapping")
         return None, None
 
@@ -461,17 +468,17 @@ async def determine_target_branch(
         cve_eligibility_result and cve_eligibility_result.is_cve and cve_eligibility_result.needs_internal_fix
     )
 
-    package = triage_data.package if hasattr(triage_data, "package") else None
+    resolved_package = getattr(triage_data, "package", None) or package
 
     if is_modular(jira_summary, downstream_component):
-        branch = _map_version_to_module_branch(triage_data.fix_version, jira_summary, downstream_component)
+        branch = _map_version_to_module_branch(resolved_fix_version, jira_summary, downstream_component)
         if not branch:
             return None, None
 
-        older_zstream = await is_older_zstream(triage_data.fix_version)
+        older_zstream = await is_older_zstream(resolved_fix_version)
         if cve_needs_internal_fix and not older_zstream:
             config = await load_rhel_config()
-            parsed_version = parse_rhel_version(triage_data.fix_version)
+            parsed_version = parse_rhel_version(resolved_fix_version)
             has_y_stream = bool(parsed_version and parsed_version[0] not in get_maintenance_majors(config))
         else:
             has_y_stream = False
@@ -486,7 +493,7 @@ async def determine_target_branch(
         )
         return branch, namespace
 
-    branch = await _map_version_to_branch(triage_data.fix_version, cve_needs_internal_fix, package)
+    branch = await _map_version_to_branch(resolved_fix_version, cve_needs_internal_fix, resolved_package)
     return branch, None
 
 
@@ -647,6 +654,13 @@ class TriageState(BaseModel):
     jira_summary: str | None = Field(
         default=None,
         description="Jira issue summary (title), used for modular detection.",
+    )
+    jira_fix_version: str | None = Field(
+        default=None,
+        description=(
+            "Raw Jira Fix Version. Used when a resolution's data carries no "
+            "fix_version, e.g. a clarification-needed CVE routed through applicability."
+        ),
     )
     applicability_local_clone: Path | None = Field(default=None)
     applicability_unpacked_sources: Path | None = Field(default=None)
@@ -1163,6 +1177,7 @@ async def run_workflow(
             except Exception as e:
                 logger.warning(f"Failed to pre-fetch Jira details for prompt selection: {e}")
 
+            state.jira_fix_version = fix_version_name or None
             input_data = InputSchema(issue=state.jira_issue)
             state.is_rebase_sibling = (
                 state.is_rebase_sibling or get_rebase_primary_issue(jira_details) is not None
@@ -1255,6 +1270,22 @@ async def run_workflow(
                 # for the reviewer to inspect. Record the gap explicitly: an
                 # LLM-only conclusion never becomes auto-close eligible.
                 state.adversarial_review_skipped = True
+            if (
+                state.triage_result.resolution == Resolution.CLARIFICATION_NEEDED
+                and state.cve_eligibility_result
+                and state.cve_eligibility_result.is_cve
+                and state.downstream_component
+            ):
+                # A CVE the LLM could not resolve may still be not-affected.
+                # Route it through the source-based applicability check so a
+                # prior not-affected assessment is re-validated (and can reach
+                # the adversarial review and auto-close gate) instead of
+                # stalling in clarification-needed.
+                logger.info(
+                    "Routing CVE clarification-needed for %s through the applicability check",
+                    state.jira_issue,
+                )
+                return "determine_target_branch"
             if state.triage_result.resolution in [
                 Resolution.CLARIFICATION_NEEDED,
                 Resolution.OPEN_ENDED_ANALYSIS,
@@ -1283,6 +1314,8 @@ async def run_workflow(
                 triage_data=state.triage_result.data,
                 jira_summary=state.jira_summary,
                 downstream_component=state.downstream_component,
+                fix_version=state.jira_fix_version,
+                package=state.downstream_component,
             )
 
             if state.target_branch:
@@ -1308,7 +1341,13 @@ async def run_workflow(
                 state.cve_eligibility_result
                 and state.cve_eligibility_result.is_cve
                 and state.triage_result.resolution
-                in (Resolution.BACKPORT, Resolution.REBUILD, Resolution.REBASE, *POSTPONED_RESOLUTIONS)
+                in (
+                    Resolution.BACKPORT,
+                    Resolution.REBUILD,
+                    Resolution.REBASE,
+                    Resolution.CLARIFICATION_NEEDED,
+                    *POSTPONED_RESOLUTIONS,
+                )
             ):
                 return "check_cve_applicability"
 
@@ -1364,7 +1403,8 @@ async def run_workflow(
         async def check_cve_applicability(state):
             """Check if a CVE actually affects the package by analyzing source code."""
             resolution = state.triage_result.resolution
-            package = state.triage_result.data.package
+            data = state.triage_result.data
+            package = getattr(data, "package", None) or state.downstream_component
             logger.info(
                 f"Checking CVE applicability for {state.jira_issue} ({resolution.value} of {package})"
             )
@@ -1373,8 +1413,11 @@ async def run_workflow(
                 logger.warning("No target branch — skipping applicability check")
                 return "comment_in_jira"
 
-            data = state.triage_result.data
-            cve_id = data.cve_id
+            cve_id = getattr(data, "cve_id", None)
+            if not cve_id:
+                # clarification-needed data carries no CVE id; recover it from
+                # the summary so the applicability prompt and result stay useful.
+                cve_id = (extract_cve_ids(state.jira_summary) or "").replace(",", " ") or None
             dep_component = getattr(data, "dependency_component", None)
             dep_issue_key = getattr(data, "dependency_issue", None)
 
@@ -1526,9 +1569,9 @@ async def run_workflow(
                             justification_category=applicability.justification_category,
                             explanation=explanation,
                             jira_issue=state.jira_issue,
-                            package=getattr(prior, "package", None),
-                            cve_id=getattr(prior, "cve_id", None),
-                            fix_version=getattr(prior, "fix_version", None),
+                            package=getattr(prior, "package", None) or package,
+                            cve_id=getattr(prior, "cve_id", None) or cve_id,
+                            fix_version=getattr(prior, "fix_version", None) or state.jira_fix_version,
                             triage_summary=getattr(prior, "triage_summary", None),
                             patch_urls=getattr(prior, "patch_urls", None),
                         ),

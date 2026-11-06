@@ -86,7 +86,13 @@ def build_applicability_prompt(
             "If you find vulnerable code, it may already be patched in the shipped "
             "version. Factor this into your confidence level and explain how "
             "the missing downstream patches limit your conclusion in the "
-            "confidence reason.\n"
+            "confidence reason. The dist-git clone still contains every declared "
+            "Source* archive (see the spec's Source entries and the `sources` "
+            "file); vendor/bundled dependency tarballs are frequently a separate "
+            "Source* rather than part of Source0. Before classifying as "
+            '"Component not Present", inspect those archives read-only '
+            "(`tar -tf`, `tar -xOf`, `rpmuncompress -l`) and account for their "
+            "contents.\n"
         )
 
     return dedent(f"""\
@@ -120,6 +126,12 @@ def build_applicability_prompt(
         reference dependencies that are never installed because the
         build system skips them (e.g. BuildNodeJS=false, optional
         build flags, commented-out BuildRequires).
+        Exception: if the spec declares a separate Source* archive that
+        supplies the component (a vendor/bundled tarball) and it is not
+        present in the extracted tree, absence from {unpacked_sources}
+        alone does not establish "Component not Present" — inspect that
+        archive read-only (it lives in the dist-git clone) and classify
+        as "Inconclusive" if you cannot verify its contents.
 
         Steps:
         0. Fetch rules in this order:

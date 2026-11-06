@@ -45,7 +45,10 @@ or a buildroot check postpones a rebuild.
 
 If RPM prep fails, the agent must account for the missing downstream patches in
 its confidence reason. The workflow preserves the model's rating without applying
-a fixed cap. Skipped or failed applicability checks remain unassessed
+a fixed cap. On a prep fallback it extracts the primary source plus every other
+declared `Source*` archive (vendor/bundled tarballs) into the analysis tree, and
+the prompt requires inspecting those archives before concluding "Component not
+Present" — an incomplete Source0-only tree is not evidence of absence. Skipped or failed applicability checks remain unassessed
 (`null`); older results without a rating also remain unrated. Confidence is
 informational: it is not a calibrated probability, CVE severity or permission to
 close an issue, and it does not change resolution or queue routing.
@@ -80,6 +83,12 @@ Triage maintains one of `ymir_review_upheld`, `ymir_review_overturned` or
 [label reference](jira_label_workflow_routing.md#review-outcome-labels). The
 reviewer can use a different model family via `REVIEW_CHAT_MODEL` so its
 errors do not simply repeat the applicability agent's.
+
+For CVEs, triage also routes `clarification-needed` conclusions through the
+applicability check. If the package is not affected, the result becomes
+`not-affected` and reaches the review and gate, instead of stalling in
+clarification — which is what makes already-not-affected issues eligible for
+auto-close.
 
 After an **upheld** review, a deterministic gate decides whether the issue
 may be closed automatically: both the applicability assessment and the review
