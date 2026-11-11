@@ -1615,7 +1615,9 @@ class ChangeJiraStatusTool(Tool[ChangeJiraStatusToolInput, ToolRunOptions, Strin
     ) -> StringToolOutput:
         issue_key = tool_input.issue_key
         status = tool_input.status
-        resolution = tool_input.resolution
+        # Normalize here so a blank config value cannot reach Jira as an
+        # invalid resolution name (Jira rejects {"name": " "} with a 400).
+        resolution = (tool_input.resolution or "").strip() or None
         if os.getenv("DRY_RUN", "False").lower() == "true":
             return StringToolOutput(
                 result=f"Dry run, not changing status of {issue_key} "

@@ -160,6 +160,21 @@ def test_open_duplicate_blocks():
     assert decision.blockers == [AutoCloseBlocker.DUPLICATE]
 
 
+def test_single_cve_does_not_block():
+    decision = evaluate_autoclose_decision(_green_input(cve_ids=["CVE-2026-12345"]))
+    assert decision.eligible
+
+
+@pytest.mark.parametrize(
+    "cve_ids",
+    [["CVE-2026-12345", "CVE-2026-54321"], ["CVE-1", "CVE-2", "CVE-3"]],
+)
+def test_multiple_cves_block(cve_ids):
+    """Only the first CVE is analyzed, so the others would close unassessed."""
+    decision = evaluate_autoclose_decision(_green_input(cve_ids=cve_ids))
+    assert decision.blockers == [AutoCloseBlocker.MULTI_CVE]
+
+
 def test_suppressed_comment_blocks():
     decision = evaluate_autoclose_decision(_green_input(comment_posted=False))
     assert decision.blockers == [AutoCloseBlocker.NO_COMMENT]
@@ -181,6 +196,7 @@ def test_blockers_accumulate_in_documented_order():
             package="kernel",
             pending_zstream_issues=["RHEL-1"],
             open_duplicate="RHEL-2",
+            cve_ids=["CVE-1", "CVE-2"],
             comment_posted=False,
         )
     )
@@ -192,6 +208,7 @@ def test_blockers_accumulate_in_documented_order():
         AutoCloseBlocker.SENSITIVE_PACKAGE,
         AutoCloseBlocker.SIBLINGS,
         AutoCloseBlocker.DUPLICATE,
+        AutoCloseBlocker.MULTI_CVE,
         AutoCloseBlocker.NO_COMMENT,
     ]
 

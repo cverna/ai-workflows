@@ -86,6 +86,13 @@ class AutoCloseEvaluationInput(BaseModel):
     open_duplicate: str | None = Field(
         default=None, description="Open duplicate tracker for the same CVE, if any"
     )
+    cve_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every CVE named by the issue. Only the first is analyzed, so more "
+            "than one leaves the others unassessed and blocks the close"
+        ),
+    )
     comment_posted: bool = Field(
         default=False, description="True only when the justification comment was posted this run"
     )
@@ -144,6 +151,9 @@ def evaluate_autoclose_decision(
 
     if decision_input.open_duplicate:
         blockers.append(AutoCloseBlocker.DUPLICATE)
+
+    if len(decision_input.cve_ids) > 1:
+        blockers.append(AutoCloseBlocker.MULTI_CVE)
 
     if not decision_input.comment_posted:
         blockers.append(AutoCloseBlocker.NO_COMMENT)

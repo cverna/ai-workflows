@@ -221,6 +221,7 @@ V1 blockers (all must be absent to close):
 | `SENSITIVE_PACKAGE` | package is on the sensitive list (kernel, openssl, glibc, …; constant list, extendable via env) |
 | `SIBLINGS` | pending z-stream sibling issues exist for the same CVE |
 | `DUPLICATE` | an open duplicate tracker exists |
+| `MULTI_CVE` | the issue names more than one CVE; only the first is analyzed, so the rest would close unassessed |
 | `NO_COMMENT` | the justification comment was not posted this run — a close requires a visible justification, an explicit precondition rather than the incidental property that `NOT_AFFECTED` is always commented |
 | `STATUS_CHANGES_DISABLED` | the platform-wide `JIRA_ALLOW_STATUS_CHANGES` flag is off, so no status transition is possible |
 | `STATE_CHANGED` | pre-close status re-check found the issue no longer in the expected state (a human touched it); emitted by the close step, never by the gate |

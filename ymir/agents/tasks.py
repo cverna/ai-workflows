@@ -1653,6 +1653,11 @@ async def _extract_extra_sources(
     """
     for filename in extra_source_filenames:
         archive = local_clone / filename
+        # The filename comes from the spec, so it is untrusted input: refuse
+        # anything that resolves outside the clone rather than reading it.
+        if not archive.resolve().is_relative_to(local_clone.resolve()):
+            logger.warning("Extra source %s escapes the clone; skipping extraction", filename)
+            continue
         if not archive.is_file():
             logger.warning("Extra source %s is not on disk; skipping extraction", filename)
             continue

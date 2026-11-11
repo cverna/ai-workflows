@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-from beeai_framework.tools.think import ThinkTool
 from flexmock import flexmock
 
 import ymir.agents.adversarial_review_agent as ar_agent
@@ -81,18 +80,17 @@ def test_factory_builds_reviewer_with_local_and_gateway_tools(monkeypatch):
     assert "adversarial" in kwargs["role"].lower()
     assert kwargs["unconstrained"] is False
     assert kwargs["llm"] is not None
-    assert len(kwargs["requirements"]) == 1
+    assert "requirements" not in kwargs
     assert len(kwargs["middlewares"]) == 1
 
     tools = kwargs["tools"]
-    assert [type(tool) for tool in tools[:4]] == [
-        ThinkTool,
+    assert [type(tool) for tool in tools[:3]] == [
         ViewTool,
         SearchTextTool,
         RunShellCommandTool,
     ]
-    assert [tool.name for tool in tools[4:]] == list(REVIEW_GATEWAY_TOOLS)
-    for tool in tools[1:4]:
+    assert [tool.name for tool in tools[3:]] == list(REVIEW_GATEWAY_TOOLS)
+    for tool in tools[:3]:
         assert tool.options.get("working_directory") == "/src/tree"
 
 

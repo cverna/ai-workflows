@@ -2159,6 +2159,28 @@ async def test_extract_extra_sources_unpacks_into_source_root(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_extract_extra_sources_refuses_paths_outside_the_clone(monkeypatch, tmp_path):
+    """The filename comes from the spec; anything escaping the clone is skipped."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    outside = tmp_path / "outside.tar.gz"
+    outside.write_bytes(b"")
+    calls = []
+
+    async def _run(cmd, cwd=None, **_kwargs):
+        calls.append(cmd)
+        return 0, "", ""
+
+    monkeypatch.setattr(agent_tasks, "run_subprocess", _run)
+    source_root = tmp_path / "demo-1.0"
+    source_root.mkdir()
+
+    await agent_tasks._extract_extra_sources(clone, ["../outside.tar.gz", str(outside)], source_root)
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_extract_extra_sources_continues_after_failure(monkeypatch, tmp_path):
     for name in ("a.tar.gz", "b.tar.gz"):
         (tmp_path / name).write_bytes(b"")

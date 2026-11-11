@@ -398,8 +398,17 @@ async def test_change_jira_status(transitions, status, expected_transition_id):
     "resolution, expected_payload",
     [
         (None, {"transition": {"id": "31"}}),
+        ("", {"transition": {"id": "31"}}),
+        ("   ", {"transition": {"id": "31"}}),
         (
             "Not a Bug",
+            {
+                "transition": {"id": "31"},
+                "fields": {"resolution": {"name": "Not a Bug"}},
+            },
+        ),
+        (
+            "  Not a Bug  ",
             {
                 "transition": {"id": "31"},
                 "fields": {"resolution": {"name": "Not a Bug"}},

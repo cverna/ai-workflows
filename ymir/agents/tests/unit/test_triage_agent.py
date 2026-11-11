@@ -178,13 +178,41 @@ def test_render_adversarial_review_result_upheld():
         ReviewVerdict.UPHELD,
         claim_checks=[
             ClaimCheck(claim="Files absent", status="verified", evidence="find returned no matches"),
-            ClaimCheck(claim="Build flag off", status="refuted", evidence="spec enables it"),
+            ClaimCheck(claim="Build flag off", status="verified", evidence="spec has no --with-x"),
         ],
     )
     text = render_adversarial_review_result(review, skipped=False)
     assert "upheld" in text
     assert "independently re-verified" in text
-    assert "2 (1 verified, 1 refuted)" in text
+    assert "2 (2 verified, 0 refuted, 0 unverifiable)" in text
+    assert "not eligible for auto-close" not in text
+
+
+@pytest.mark.parametrize(
+    ("claim_checks", "expected"),
+    [
+        ([ClaimCheck(claim="Build flag off", status="refuted", evidence="spec enables it")], "1 claim(s)"),
+        (
+            [ClaimCheck(claim="Vendored copy", status="unverifiable", evidence="archive unreadable")],
+            "1 claim(s)",
+        ),
+        (
+            [
+                ClaimCheck(claim="Build flag off", status="refuted", evidence="spec enables it"),
+                ClaimCheck(claim="Vendored copy", status="unverifiable", evidence="archive unreadable"),
+            ],
+            "2 claim(s)",
+        ),
+    ],
+)
+def test_render_adversarial_review_result_upheld_never_overstates_verification(claim_checks, expected):
+    """An upheld verdict with unconfirmed claims must not read as full re-verification."""
+    text = render_adversarial_review_result(
+        _review_result(ReviewVerdict.UPHELD, claim_checks=claim_checks), skipped=False
+    )
+    assert "independently re-verified" not in text
+    assert expected in text
+    assert "treat it with caution" in text
     assert "not eligible for auto-close" not in text
 
 
@@ -1708,7 +1736,7 @@ async def test_adversarial_review_workflow(scenario, dry_run, _mock_env_vars, mo
     async def _record_status(*args, **kwargs):
         events.append("status_change")
 
-    async def _metadata(jira_issue):
+    async def _metadata(jira_issue, **_kwargs):
         return [], "New"
 
     monkeypatch.setattr(agent_tasks, "set_jira_labels", _record_labels)
@@ -2640,6 +2668,7 @@ def _record_close_calls(monkeypatch) -> dict:
             },
             False,
         ),
+        ({"cve_ids": ["CVE-2026-1", "CVE-2026-2"]}, False),
     ],
 )
 async def test_maybe_auto_close_gate(monkeypatch, overrides, expect_close):
@@ -2679,8 +2708,19 @@ async def test_maybe_auto_close_preconditions(monkeypatch, env, comment_posted, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["Closed", "Done", "Release Pending"])
+@pytest.mark.parametrize(
+    "status",
+    [
+        "Closed",
+        "Done",
+        "Release Pending",
+        "Integration",
+        "Some Unknown Status",
+        None,
+    ],
+)
 async def test_maybe_auto_close_skips_when_status_changed(monkeypatch, status):
+    """Only a status that still awaits triage work may be closed (fail-safe)."""
     monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
     calls = _record_close_calls(monkeypatch)
 

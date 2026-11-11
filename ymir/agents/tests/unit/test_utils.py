@@ -115,3 +115,35 @@ def test_is_reasoning_enabled_honors_explicit_model_name(monkeypatch):
 
     monkeypatch.delenv("REASONING_EFFORT")
     assert utils.is_reasoning_enabled(model_name="anthropic:claude-sonnet-4-6") is False
+
+
+@pytest.mark.parametrize(
+    ("effort", "expected_effort", "expected_temperature", "expected_parallel"),
+    [
+        ("high", "high", 1, True),
+        ("none", None, 0.6, False),
+        ("", None, 0.6, False),
+    ],
+)
+def test_get_chat_model_drops_disabled_reasoning_effort(
+    monkeypatch, effort, expected_effort, expected_temperature, expected_parallel
+):
+    """REASONING_EFFORT=none must not reach the provider (OpenAI rejects it)."""
+    captured: dict = {}
+
+    def from_name(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(allow_prompt_caching=None, tool_choice_support=None)
+
+    monkeypatch.setenv("CHAT_MODEL", "openai:gpt-6.1-sol")
+    monkeypatch.setenv("REASONING_EFFORT", effort)
+    monkeypatch.delenv("TEMPERATURE", raising=False)
+    monkeypatch.setattr(utils.ChatModel, "from_name", from_name)
+
+    utils.get_chat_model()
+
+    params = captured["args"][1]
+    assert params.reasoning_effort == expected_effort
+    assert params.temperature == expected_temperature
+    assert captured["kwargs"]["allow_parallel_tool_calls"] is expected_parallel

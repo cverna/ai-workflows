@@ -79,7 +79,12 @@ def get_chat_model(model_name: str | None = None) -> ChatModel:
     # lowering the temperature makes the model stop backporting too soon
     # but should yield more predictable results, similar for top_p (tried 0.5)
     temperature = float(os.getenv("TEMPERATURE", "0.6"))
-    reasoning_effort = os.getenv("REASONING_EFFORT")
+    # Providers reject the disabled spellings ("none"/empty) as a reasoning
+    # effort value, so drop the parameter instead of forwarding it verbatim.
+    raw_reasoning_effort = os.getenv("REASONING_EFFORT")
+    reasoning_effort = (
+        raw_reasoning_effort if (raw_reasoning_effort or "").strip().lower() not in ("", "none") else None
+    )
     reasoning_enabled = is_reasoning_enabled(model_name=model_name)
 
     settings: dict[str, Any] = {"num_retries": int(os.getenv("LITELLM_NUM_RETRIES", 3))}

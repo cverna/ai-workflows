@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import traceback
+from collections import Counter
 from pathlib import Path
 from typing import Literal
 
@@ -681,6 +682,13 @@ class TriageState(BaseModel):
     jira_severity: str | None = Field(
         default=None, description="Raw Jira severity value used by the auto-close gate"
     )
+    cve_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every CVE named by the issue. Only the first is analyzed, so more "
+            "than one blocks auto-close (MULTI_CVE)"
+        ),
+    )
     rebase_waiting_for_siblings: bool = Field(
         default=False,
         description=(
@@ -1186,6 +1194,11 @@ async def run_workflow(
                 JiraLabels.WAITING_FOR_SIBLINGS.value in jira_details.get("fields", {}).get("labels", [])
             )
             state.jira_summary = jira_details.get("fields", {}).get("summary")
+            # Keep every named CVE: only the first is analyzed downstream, so
+            # the gate blocks a close that would leave the others unassessed.
+            state.cve_ids = [
+                cve.strip() for cve in (extract_cve_ids(state.jira_summary) or "").split(",") if cve.strip()
+            ]
             raw_component = jira_details.get("fields", {}).get(DOWNSTREAM_COMPONENT_CUSTOM_FIELD)
             state.raw_downstream_component = raw_component or None
             # Modular issues store "module:stream/package" (e.g. "postgresql:16/postgis");
@@ -1417,7 +1430,7 @@ async def run_workflow(
             if not cve_id:
                 # clarification-needed data carries no CVE id; recover it from
                 # the summary so the applicability prompt and result stay useful.
-                cve_id = (extract_cve_ids(state.jira_summary) or "").replace(",", " ") or None
+                cve_id = state.cve_ids[0] if state.cve_ids else None
             dep_component = getattr(data, "dependency_component", None)
             dep_issue_key = getattr(data, "dependency_issue", None)
 
@@ -1915,7 +1928,9 @@ async def run_workflow(
                             [state.jira_issue, *[issue.issue_key for issue in siblings]],
                         ),
                         agent_type="Triage",
-                        triaged_label=_resolution_label(state.triage_result.resolution, state.triage_only).value,
+                        triaged_label=_resolution_label(
+                            state.triage_result.resolution, state.triage_only
+                        ).value,
                         dry_run=dry_run,
                         user_triggered=user_triggered,
                         primary_comment=comment_text,
@@ -1967,14 +1982,16 @@ async def run_workflow(
                 response.state.applicability_unpacked_sources = None
 
 
-# A human or another workflow already moved the issue past triage; closing
-# from one of these would be wrong (and double-closing is never idempotent
-# from Ymir's point of view).
-_NON_CLOSABLE_JIRA_STATUSES = frozenset(
+# A not-affected close is only legitimate while the issue is still awaiting
+# triage work. Anything else — Integration, Release Pending, Done, Closed, or
+# a status this list does not know — means a human or another workflow moved
+# it, so the close is skipped (fail-safe, and never double-closes).
+_CLOSABLE_JIRA_STATUSES = frozenset(
     {
-        IssueStatus.CLOSED.value,
-        IssueStatus.DONE.value,
-        IssueStatus.RELEASE_PENDING.value,
+        IssueStatus.NEW.value,
+        IssueStatus.PLANNING.value,
+        IssueStatus.REFINEMENT.value,
+        IssueStatus.IN_PROGRESS.value,
     }
 )
 
@@ -2015,6 +2032,7 @@ async def maybe_auto_close_not_affected(
             # A blocking duplicate makes the issue ineligible for triage, so
             # an open duplicate cannot reach this point by construction.
             open_duplicate=None,
+            cve_ids=state.cve_ids,
             comment_posted=comment_posted,
             status_changes_enabled=status_changes_enabled,
         )
@@ -2039,7 +2057,7 @@ async def maybe_auto_close_not_affected(
     # Runtime re-check for races: a human may have moved the issue while the
     # review was running. The gate itself never emits STATE_CHANGED.
     _, current_status = await tasks.get_jira_issue_metadata(state.jira_issue)
-    if current_status in _NON_CLOSABLE_JIRA_STATUSES:
+    if current_status not in _CLOSABLE_JIRA_STATUSES:
         logger.info(
             "Skipping auto-close for %s: %s (%s)",
             state.jira_issue,
@@ -2083,20 +2101,31 @@ def render_adversarial_review_result(
             )
         return ""
 
-    verified = sum(1 for check in review.claim_checks if check.status == "verified")
-    refuted = sum(1 for check in review.claim_checks if check.status == "refuted")
+    counts = Counter(check.status for check in review.claim_checks)
+    unconfirmed = counts["refuted"] + counts["unverifiable"]
     lines = [
         f"\n\n*Adversarial Review*: {review.verdict.value}",
         f"*Independent Conclusion*: {review.independent_conclusion}",
-        f"*Claims Re-checked*: {len(review.claim_checks)} ({verified} verified, {refuted} refuted)",
+        (
+            f"*Claims Re-checked*: {len(review.claim_checks)} "
+            f"({counts['verified']} verified, {counts['refuted']} refuted, "
+            f"{counts['unverifiable']} unverifiable)"
+        ),
         f"*Review Confidence*: {review.confidence.level} — {review.confidence.reason}",
     ]
     if review.counter_evidence:
         lines.append(f"*Counter-evidence*: {review.counter_evidence}")
-    if review.verdict == ReviewVerdict.UPHELD:
-        lines.append("The not-affected conclusion was independently re-verified.")
-    else:
+    if review.verdict != ReviewVerdict.UPHELD:
         lines.append("This issue is not eligible for auto-close.")
+    elif unconfirmed:
+        # The verdict says the conclusion survives, but a claim could not be
+        # confirmed; never let the comment read as full re-verification.
+        lines.append(
+            "The not-affected conclusion was upheld, but "
+            f"{unconfirmed} claim(s) could not be confirmed — treat it with caution."
+        )
+    else:
+        lines.append("The not-affected conclusion was independently re-verified.")
     return "\n".join(lines)
 
 
