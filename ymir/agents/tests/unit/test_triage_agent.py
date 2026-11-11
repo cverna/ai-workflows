@@ -1614,6 +1614,8 @@ async def test_adversarial_review_workflow(scenario, dry_run, _mock_env_vars, mo
     """
     monkeypatch.setenv("GIT_REPO_BASEPATH", str(tmp_path))
     monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
+    # Auto-close is opt-in per package; the triage output below is for bash.
+    monkeypatch.setenv("AUTO_CLOSE_PACKAGES", "bash")
     common_data = {
         "package": "bash",
         "jira_issue": "RHEL-99999",
@@ -2627,6 +2629,8 @@ def _close_test_state(**overrides) -> TriageState:
 
 
 def _record_close_calls(monkeypatch) -> dict:
+    # Auto-close is opt-in per package; the fixture state uses demo-pkg.
+    monkeypatch.setenv("AUTO_CLOSE_PACKAGES", "demo-pkg")
     calls = {"status": [], "labels": [], "metadata": []}
 
     async def _change_status(*args, **kwargs):

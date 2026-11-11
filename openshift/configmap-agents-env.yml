@@ -20,18 +20,22 @@ data:
   # alongside the transition.
   JIRA_ALLOW_STATUS_CHANGES: "false"
   # Auto-close of not-affected issues is only reachable when the flag above is
-  # "true". A close additionally requires an upheld adversarial review, high
-  # confidence from both the applicability agent and the reviewer, fully
-  # prepared sources, low or moderate severity, a non-sensitive package, no
-  # pending z-stream siblings, a single CVE, and a posted justification
-  # comment. Every blocked close is logged with its named reasons.
+  # "true", and it is opt-in per package: with the list below empty, nothing is
+  # ever closed. A close additionally requires an upheld adversarial review,
+  # high confidence from both the applicability agent and the reviewer, fully
+  # prepared sources, low or moderate severity, no pending z-stream siblings, a
+  # single CVE, and a posted justification comment. Every blocked close is
+  # logged with its named reasons.
+  # Comma-separated source packages allowed to auto-close. Start with a small
+  # set of leaf packages and widen it as the review proves itself.
+  # AUTO_CLOSE_PACKAGES: ""
+  # Packages never auto-closed even when listed above (kernel, openssl, glibc,
+  # systemd, ...). Comma-separated additions extend the built-in floor; the
+  # built-in entries cannot be removed.
+  # AUTO_CLOSE_SENSITIVE_PACKAGES: ""
   # Target status and resolution of an eligible close.
   # JIRA_CLOSE_STATUS: "Closed"
   # JIRA_CLOSE_RESOLUTION: "Not a Bug"
-  # Comma-separated packages added to the built-in sensitive list (kernel,
-  # openssl, glibc, systemd, ...). Extend it per environment; the built-in
-  # entries cannot be removed.
-  # AUTO_CLOSE_SENSITIVE_PACKAGES: ""
   # Optional reviewer model override, e.g. a different model family from
   # CHAT_MODEL so the reviewer's errors do not simply repeat the applicability
   # agent's.

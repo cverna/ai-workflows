@@ -116,7 +116,8 @@ async def test_golden_false_component_not_present_claim_is_overturnable(tmp_path
             package="demo-pkg",
             comment_posted=True,
             status_changes_enabled=True,
-        )
+        ),
+        opted_in=frozenset({"demo-pkg"}),
     )
     assert AutoCloseBlocker.REVIEW in decision.blockers
     assert not decision.eligible

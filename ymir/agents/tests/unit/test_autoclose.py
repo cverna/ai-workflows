@@ -3,6 +3,7 @@ import pytest
 from ymir.agents.autoclose import (
     AutoCloseEvaluationInput,
     evaluate_autoclose_decision,
+    opted_in_packages,
     sensitive_packages,
 )
 from ymir.common.models import (
@@ -12,6 +13,19 @@ from ymir.common.models import (
     ConfidenceAssessment,
     ReviewVerdict,
 )
+
+GREEN_PACKAGE = "some-leaf-package"
+
+
+@pytest.fixture(autouse=True)
+def _opt_in_green_package(monkeypatch):
+    """Start every test from a package that has opted in.
+
+    Auto-close is opt-in, so the green baseline would otherwise be blocked by
+    PACKAGE_NOT_OPTED_IN. The opt-in gate itself is exercised by the tests
+    that clear or override the list.
+    """
+    monkeypatch.setenv("AUTO_CLOSE_PACKAGES", GREEN_PACKAGE)
 
 
 def _review_result(**overrides) -> AdversarialReviewResult:
@@ -126,9 +140,46 @@ def test_closable_severity_passes(severity):
 
 
 @pytest.mark.parametrize("package", ["kernel", "OpenSSL", "GLIBC"])
-def test_sensitive_builtin_package_blocks(package):
+def test_protected_builtin_package_blocks(package):
     decision = evaluate_autoclose_decision(_green_input(package=package))
+    assert AutoCloseBlocker.SENSITIVE_PACKAGE in decision.blockers
+
+
+def test_protected_package_blocks_even_when_opted_in(monkeypatch):
+    """Opting a package in cannot override the built-in protected floor."""
+    monkeypatch.setenv("AUTO_CLOSE_PACKAGES", f"{GREEN_PACKAGE},kernel")
+    decision = evaluate_autoclose_decision(_green_input(package="kernel"))
     assert decision.blockers == [AutoCloseBlocker.SENSITIVE_PACKAGE]
+
+
+def test_opt_in_list_is_empty_by_default(monkeypatch):
+    """Opt-in, not opt-out: without AUTO_CLOSE_PACKAGES nothing is eligible."""
+    monkeypatch.delenv("AUTO_CLOSE_PACKAGES", raising=False)
+    decision = evaluate_autoclose_decision(_green_input())
+    assert decision.blockers == [AutoCloseBlocker.PACKAGE_NOT_OPTED_IN]
+    assert not decision.eligible
+
+
+@pytest.mark.parametrize("value", ["", " , ,, "])
+def test_empty_opt_in_list_closes_nothing(monkeypatch, value):
+    monkeypatch.setenv("AUTO_CLOSE_PACKAGES", value)
+    decision = evaluate_autoclose_decision(_green_input())
+    assert decision.blockers == [AutoCloseBlocker.PACKAGE_NOT_OPTED_IN]
+
+
+@pytest.mark.parametrize("package", ["Some-Leaf-Package", " some-leaf-package "])
+def test_opt_in_comparison_ignores_case_and_padding(package):
+    decision = evaluate_autoclose_decision(_green_input(package=package))
+    assert decision.eligible
+
+
+def test_opted_in_packages_env_parsing():
+    parsed = opted_in_packages(env={"AUTO_CLOSE_PACKAGES": "MyPackage, other-pkg,, "})
+    assert parsed == frozenset({"mypackage", "other-pkg"})
+
+
+def test_opted_in_packages_env_unset_is_empty():
+    assert opted_in_packages(env={}) == frozenset()
 
 
 def test_sensitive_packages_env_extension():
@@ -144,9 +195,18 @@ def test_sensitive_packages_env_unset_adds_nothing():
 
 def test_injected_sensitive_set_is_used():
     decision = evaluate_autoclose_decision(
-        _green_input(package="my-package"), sensitive=frozenset({"my-package"})
+        _green_input(package="my-package"),
+        sensitive=frozenset({"my-package"}),
+        opted_in=frozenset({"my-package"}),
     )
     assert decision.blockers == [AutoCloseBlocker.SENSITIVE_PACKAGE]
+
+
+def test_injected_opted_in_set_is_used():
+    decision = evaluate_autoclose_decision(
+        _green_input(package="my-package"), opted_in=frozenset({"my-package"})
+    )
+    assert decision.eligible
 
 
 @pytest.mark.parametrize("siblings", [["RHEL-1"], ["RHEL-1", "RHEL-2"]])
@@ -206,6 +266,7 @@ def test_blockers_accumulate_in_documented_order():
         AutoCloseBlocker.PREP_FALLBACK,
         AutoCloseBlocker.SEVERITY,
         AutoCloseBlocker.SENSITIVE_PACKAGE,
+        AutoCloseBlocker.PACKAGE_NOT_OPTED_IN,
         AutoCloseBlocker.SIBLINGS,
         AutoCloseBlocker.DUPLICATE,
         AutoCloseBlocker.MULTI_CVE,

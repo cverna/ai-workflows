@@ -601,7 +601,7 @@ class AdversarialReviewResult(BaseModel):
 class AutoCloseBlocker(StrEnum):
     """Named reasons a not-affected issue must not auto-close.
 
-    The first eleven are emitted by evaluate_autoclose_decision(); STATE_CHANGED
+    The first twelve are emitted by evaluate_autoclose_decision(); STATE_CHANGED
     is added by the close step's runtime status re-check, never by the gate.
     """
 
@@ -612,6 +612,7 @@ class AutoCloseBlocker(StrEnum):
     PREP_FALLBACK = "prep_fallback"
     SEVERITY = "severity"
     SENSITIVE_PACKAGE = "sensitive_package"
+    PACKAGE_NOT_OPTED_IN = "package_not_opted_in"
     SIBLINGS = "siblings"
     DUPLICATE = "duplicate"
     MULTI_CVE = "multi_cve"

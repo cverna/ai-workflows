@@ -93,10 +93,12 @@ auto-close.
 After an **upheld** review, a deterministic gate decides whether the issue
 may be closed automatically: both the applicability assessment and the review
 must be high confidence, sources must have been fully prepared, severity must
-be low or moderate, the issue must name a single CVE, the package must not be
-on the sensitive list (`kernel`, `openssl`, `glibc`, …; extend it per
-environment with `AUTO_CLOSE_SENSITIVE_PACKAGES`), and no sibling Z-stream
-issues may be pending. Every blocked close is logged with its named reasons.
+be low or moderate, the issue must name a single CVE, the package must be
+explicitly opted in via `AUTO_CLOSE_PACKAGES` (empty by default, so enabling
+the flag closes nothing) and must not be on the protected list (`kernel`,
+`openssl`, `glibc`, …; extend it per environment with
+`AUTO_CLOSE_SENSITIVE_PACKAGES`), and no sibling Z-stream issues may be
+pending. Every blocked close is logged with its named reasons.
 Eligible issues are transitioned to `Closed` with
 resolution `Not a Bug` (configurable via `JIRA_CLOSE_STATUS` and
 `JIRA_CLOSE_RESOLUTION`) and marked `ymir_autoclosed`. This respects the

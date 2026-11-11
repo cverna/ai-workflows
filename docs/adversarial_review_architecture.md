@@ -108,8 +108,9 @@ The module layout mirrors `cve_applicability_agent.py`:
 - `ymir/common/models.py` — `ReviewVerdict`, `ClaimCheck`,
   `AdversarialReviewResult`, `AutoCloseBlocker`, `AutoCloseDecision`.
 - `ymir/agents/autoclose.py` — `evaluate_autoclose_decision()` (pure
-  function), its input model and the sensitive-package list; a sibling of
-  the consolidation modules rather than more mass in `triage_agent.py`.
+  function), its input model, the opt-in package list and the protected
+  floor; a sibling of the consolidation modules rather than more mass in
+  `triage_agent.py`.
 - `ymir/agents/triage_agent.py` — the `adversarial_review` state, label
   helpers, close step in `comment_in_jira`.
 
@@ -201,12 +202,19 @@ the disagreement is always visible to the requester.
 ## The Auto-Close Gate (deterministic)
 
 `evaluate_autoclose_decision()` is a **pure function** of its inputs and the
-sensitive-package set (passed explicitly by the workflow, or derived from the
-`AUTO_CLOSE_SENSITIVE_PACKAGES` config): inputs in,
+package policy (the opt-in list from `AUTO_CLOSE_PACKAGES` and the protected
+floor from `AUTO_CLOSE_SENSITIVE_PACKAGES`, both passable explicitly so the
+gate stays testable): inputs in,
 `AutoCloseDecision{eligible: bool, blockers: list[AutoCloseBlocker]}` out.
 No LLM judges whether closing is safe — policy lives in versioned code.
 Every non-close is explainable by named blockers; every close is reproducible
 from the recorded inputs.
+
+Auto-close is **opt-in per package**. An empty `AUTO_CLOSE_PACKAGES` (the
+default) means no issue is ever closed, so turning on the platform-wide
+status-change flag cannot by itself close anything. The built-in protected
+list is a floor that opting a package in cannot override: listing `kernel`
+blocks it twice rather than closing it.
 
 V1 blockers (all must be absent to close):
 
@@ -218,7 +226,8 @@ V1 blockers (all must be absent to close):
 | `REVIEW_CONFIDENCE` | review confidence is not `high` |
 | `PREP_FALLBACK` | sources were analyzed unpatched (`applicability_used_fallback`) |
 | `SEVERITY` | severity is not `low` or `moderate` — **Critical and Important are never auto-closed in v1**; unknown severity blocks |
-| `SENSITIVE_PACKAGE` | package is on the sensitive list (kernel, openssl, glibc, …; constant list, extendable via env) |
+| `SENSITIVE_PACKAGE` | package is on the protected floor (kernel, openssl, glibc, …; constant list, extendable via env, never removable by opting in) |
+| `PACKAGE_NOT_OPTED_IN` | package is not listed in `AUTO_CLOSE_PACKAGES` — **the opt-in gate**; an empty list blocks every package |
 | `SIBLINGS` | pending z-stream sibling issues exist for the same CVE |
 | `DUPLICATE` | an open duplicate tracker exists |
 | `MULTI_CVE` | the issue names more than one CVE; only the first is analyzed, so the rest would close unassessed |
@@ -323,7 +332,8 @@ sections for all of the above.
 | Variable | Default | Purpose |
 |---|---|---|
 | `REVIEW_CHAT_MODEL` | `CHAT_MODEL` | reviewer model override (decorrelation) |
-| `AUTO_CLOSE_SENSITIVE_PACKAGES` | — | extends the built-in sensitive list |
+| `AUTO_CLOSE_PACKAGES` | — (empty) | **opt-in list**: packages allowed to auto-close; empty closes nothing |
+| `AUTO_CLOSE_SENSITIVE_PACKAGES` | — | extends the built-in protected floor (never removable) |
 | `JIRA_CLOSE_STATUS` | `Closed` | target status |
 | `JIRA_CLOSE_RESOLUTION` | `Not a Bug` | target resolution |
 | `JIRA_ALLOW_STATUS_CHANGES` | `false` (platform default) | pre-existing platform guard; auto-close only runs when it is `true` |
@@ -381,9 +391,9 @@ itself is the control; there is no separate enable flag:
 
 What stands between a not-affected conclusion and a closed issue is the
 gate's requirements themselves: dual high confidence (applicability and
-review), fully-prepared sources, the severity ceiling, the sensitive-package
-list, and the fail-safe `NO_REVIEW` catch-all — backed by the calibration
-and audit above.
+review), fully-prepared sources, the severity ceiling, the per-package
+opt-in list, the protected floor, and the fail-safe `NO_REVIEW` catch-all —
+backed by the calibration and audit above.
 
 ## Future Work
 
