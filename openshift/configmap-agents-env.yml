@@ -19,6 +19,23 @@ data:
   # status-change comment produced by issue-verification is suppressed
   # alongside the transition.
   JIRA_ALLOW_STATUS_CHANGES: "false"
+  # Auto-close of not-affected issues is only reachable when the flag above is
+  # "true". A close additionally requires an upheld adversarial review, high
+  # confidence from both the applicability agent and the reviewer, fully
+  # prepared sources, low or moderate severity, a non-sensitive package, no
+  # pending z-stream siblings, a single CVE, and a posted justification
+  # comment. Every blocked close is logged with its named reasons.
+  # Target status and resolution of an eligible close.
+  # JIRA_CLOSE_STATUS: "Closed"
+  # JIRA_CLOSE_RESOLUTION: "Not a Bug"
+  # Comma-separated packages added to the built-in sensitive list (kernel,
+  # openssl, glibc, systemd, ...). Extend it per environment; the built-in
+  # entries cannot be removed.
+  # AUTO_CLOSE_SENSITIVE_PACKAGES: ""
+  # Optional reviewer model override, e.g. a different model family from
+  # CHAT_MODEL so the reviewer's errors do not simply repeat the applicability
+  # agent's.
+  # REVIEW_CHAT_MODEL: ""
   # When "true", agents assign reviewers to newly created MRs based on
   # the package's bugzilla component contacts (Default Assignee + QA Contact).
   ASSIGN_MR_REVIEWERS: "true"
