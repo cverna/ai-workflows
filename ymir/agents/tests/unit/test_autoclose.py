@@ -109,6 +109,42 @@ def test_review_confidence_below_high_blocks(level):
     assert decision.blockers == [AutoCloseBlocker.REVIEW_CONFIDENCE]
 
 
+def test_upheld_review_with_affected_conclusion_blocks():
+    """An upheld verdict that contradicts its own conclusion must not close.
+
+    The prompt forbids this combination, but the gate is where policy is
+    enforced, and the schema permits the model to emit it.
+    """
+    decision = evaluate_autoclose_decision(
+        _green_input(review=_review_result(independent_conclusion="affected"))
+    )
+    assert decision.blockers == [AutoCloseBlocker.REVIEW_INCONSISTENT]
+
+
+def test_upheld_review_with_refuted_claim_blocks():
+    """The reviewer refuting one of the claims is its own counter-evidence."""
+    decision = evaluate_autoclose_decision(
+        _green_input(
+            review=_review_result(
+                claim_checks=[ClaimCheck(claim="Files absent", status="refuted", evidence="found in vendor/")]
+            )
+        )
+    )
+    assert decision.blockers == [AutoCloseBlocker.REVIEW_INCONSISTENT]
+
+
+def test_upheld_review_with_unverifiable_claim_is_not_inconsistent():
+    """An unverifiable claim is covered by the confidence check, not this one."""
+    decision = evaluate_autoclose_decision(
+        _green_input(
+            review=_review_result(
+                claim_checks=[ClaimCheck(claim="Build flag off", status="unverifiable", evidence="no spec")]
+            )
+        )
+    )
+    assert decision.eligible
+
+
 def test_overturned_low_confidence_review_accumulates_both_review_blockers():
     decision = evaluate_autoclose_decision(
         _green_input(

@@ -2029,9 +2029,18 @@ async def maybe_auto_close_not_affected(
                 if state.cve_eligibility_result
                 else []
             ),
-            # A blocking duplicate makes the issue ineligible for triage, so
-            # an open duplicate cannot reach this point by construction.
-            open_duplicate=None,
+            # A blocking duplicate gives eligibility NEVER, which stops triage
+            # before this point — unless FORCE_CVE_TRIAGE is set, which is how
+            # our own dry runs are triggered. Forward the key rather than
+            # assuming the duplicate check already ran: a non-blocking older
+            # tracker (closed/rejected) is not an open duplicate and must not
+            # block a close.
+            open_duplicate=(
+                state.cve_eligibility_result.duplicate_of
+                if state.cve_eligibility_result
+                and state.cve_eligibility_result.eligibility == TriageEligibility.NEVER
+                else None
+            ),
             cve_ids=state.cve_ids,
             comment_posted=comment_posted,
             status_changes_enabled=status_changes_enabled,

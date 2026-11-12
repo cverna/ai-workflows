@@ -2763,6 +2763,50 @@ async def test_maybe_auto_close_only_for_not_affected(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_maybe_auto_close_blocks_on_open_duplicate(monkeypatch):
+    """FORCE_CVE_TRIAGE can push a duplicate past the eligibility gate.
+
+    A blocking duplicate returns eligibility NEVER, which normally stops the
+    workflow before the close. Forced triage bypasses that, so the gate has to
+    see the duplicate key rather than assume the earlier check ran.
+    """
+    monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
+    calls = _record_close_calls(monkeypatch)
+    state = _close_test_state(
+        cve_eligibility_result=CVEEligibilityResult(
+            is_cve=True,
+            eligibility=TriageEligibility.NEVER,
+            reason="Duplicate of RHEL-42",
+            duplicate_of="RHEL-42",
+        )
+    )
+
+    await maybe_auto_close_not_affected(state, [], comment_posted=True, dry_run=False, user_triggered=False)
+
+    assert not calls["status"]
+    assert not calls["labels"]
+
+
+@pytest.mark.asyncio
+async def test_maybe_auto_close_ignores_closed_older_tracker(monkeypatch):
+    """An older tracker that was closed is not an open duplicate."""
+    monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
+    calls = _record_close_calls(monkeypatch)
+    state = _close_test_state(
+        cve_eligibility_result=CVEEligibilityResult(
+            is_cve=True,
+            eligibility=TriageEligibility.IMMEDIATELY,
+            reason="Eligible",
+            duplicate_of="RHEL-42",
+        )
+    )
+
+    await maybe_auto_close_not_affected(state, [], comment_posted=True, dry_run=False, user_triggered=False)
+
+    assert calls["status"]
+
+
+@pytest.mark.asyncio
 async def test_maybe_auto_close_transition_payload(monkeypatch):
     monkeypatch.setenv("JIRA_ALLOW_STATUS_CHANGES", "true")
     monkeypatch.setenv("JIRA_CLOSE_STATUS", "Closed")

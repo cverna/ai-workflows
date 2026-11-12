@@ -224,12 +224,13 @@ V1 blockers (all must be absent to close):
 | `CONFIDENCE` | applicability confidence is not `high` |
 | `REVIEW` | review verdict is not `upheld` |
 | `REVIEW_CONFIDENCE` | review confidence is not `high` |
+| `REVIEW_INCONSISTENT` | an upheld verdict contradicts its own content: `independent_conclusion` is not `not_affected`, or a claim check was refuted. The schema permits the combination, so the gate rejects it instead of trusting the prompt |
 | `PREP_FALLBACK` | sources were analyzed unpatched (`applicability_used_fallback`) |
 | `SEVERITY` | severity is not `low` or `moderate` — **Critical and Important are never auto-closed in v1**; unknown severity blocks |
 | `SENSITIVE_PACKAGE` | package is on the protected floor (kernel, openssl, glibc, …; constant list, extendable via env, never removable by opting in) |
 | `PACKAGE_NOT_OPTED_IN` | package is not listed in `AUTO_CLOSE_PACKAGES` — **the opt-in gate**; an empty list blocks every package |
 | `SIBLINGS` | pending z-stream sibling issues exist for the same CVE |
-| `DUPLICATE` | an open duplicate tracker exists |
+| `DUPLICATE` | an open duplicate tracker exists. Forwarded from the eligibility result rather than assumed: `FORCE_CVE_TRIAGE` can push a duplicate past the eligibility gate, and a closed older tracker is not an open duplicate |
 | `MULTI_CVE` | the issue names more than one CVE; only the first is analyzed, so the rest would close unassessed |
 | `NO_COMMENT` | the justification comment was not posted this run — a close requires a visible justification, an explicit precondition rather than the incidental property that `NOT_AFFECTED` is always commented |
 | `STATUS_CHANGES_DISABLED` | the platform-wide `JIRA_ALLOW_STATUS_CHANGES` flag is off, so no status transition is possible |

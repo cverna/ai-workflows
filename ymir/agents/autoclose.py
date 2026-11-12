@@ -158,6 +158,15 @@ def evaluate_autoclose_decision(
             blockers.append(AutoCloseBlocker.REVIEW)
         if review.confidence.level != "high":
             blockers.append(AutoCloseBlocker.REVIEW_CONFIDENCE)
+        # The schema cannot say "upheld but affected", and nothing stops a
+        # model from emitting it. The prompt forbids it; the gate is where
+        # that is actually enforced. A refuted claim means the reviewer
+        # itself found the evidence against the conclusion.
+        if review.verdict == ReviewVerdict.UPHELD and (
+            review.independent_conclusion != "not_affected"
+            or any(check.status == "refuted" for check in review.claim_checks)
+        ):
+            blockers.append(AutoCloseBlocker.REVIEW_INCONSISTENT)
 
     if decision_input.used_fallback_sources:
         blockers.append(AutoCloseBlocker.PREP_FALLBACK)
